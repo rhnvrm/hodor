@@ -248,20 +248,15 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/mr-karan/hodor:latest
     steps:
-      - name: Install hodor
-        run: |
-          pip install uv
-          git clone https://github.com/mr-karan/hodor.git
-          cd hodor && uv venv && uv pip install -e .
-
       - name: Run review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          cd hodor
-          uv run hodor \
+          hodor \
             "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" \
             --model gpt-5 \
             --token "$GITHUB_TOKEN" \

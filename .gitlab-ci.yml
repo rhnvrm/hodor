@@ -15,7 +15,9 @@ stages:
 # Recommended: Using Docker image (faster, smaller)
 hodor-review:
   stage: review
-  image: ghcr.io/mr-karan/hodor:latest
+  image:
+    name: ghcr.io/mr-karan/hodor:latest
+    entrypoint: [""]  # Override ENTRYPOINT to allow shell commands
 
   # Only run on merge request events
   rules:

@@ -302,7 +302,9 @@ stages:
 
 hodor-review:
   stage: review
-  image: ghcr.io/mr-karan/hodor:latest
+  image:
+    name: ghcr.io/mr-karan/hodor:latest
+    entrypoint: [""]  # Override ENTRYPOINT to allow shell commands
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
   script:
