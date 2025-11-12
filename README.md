@@ -1,334 +1,138 @@
-# Hodor
+# Hodor 🚪
 
-An AI-powered code review agent that performs actual code reviews by analyzing diffs line-by-line to identify bugs, security vulnerabilities, logic errors, and code quality issues.
+> AI code review agent that finds bugs, not style issues.
 
-**Supports**: GitHub and GitLab (including self-hosted instances)
+**Automated PR reviews for GitHub & GitLab** • Runs in CI/CD • Posts comments automatically • Fast (1-3 min avg)
 
-## What This Does
+## What It Does
 
-Hodor performs line-by-line code review to identify:
+Reviews your pull requests and finds:
+- **Bugs**: Race conditions, null derefs, logic errors, resource leaks
+- **Security**: SQL injection, XSS, auth bypasses, secrets in code
+- **Performance**: N+1 queries, O(n²) algorithms, memory leaks
 
-- **Bugs**: Race conditions, null pointer errors, resource leaks, off-by-one errors
-- **Security issues**: SQL injection, XSS, auth bypasses, exposed secrets
-- **Performance problems**: N+1 queries, inefficient algorithms, memory leaks
-- **Code smells**: Missing error handling, bad practices, duplicated code
+**Not**: Code style, formatting, or subjective opinions.
 
-## Features
-
-- Reads every line of changed code in diffs
-- Provides specific file:line references with problematic code
-- Explains WHY something is a problem
-- Suggests concrete fixes with code examples
-- Works with any language (Go, Python, JavaScript, etc.)
-
-## How it Works
-
-Hodor is an agentic code reviewer that uses an AI agent loop to analyze pull requests:
-
-1. **Fetches PR/MR data** - Gets diff, files, and metadata from GitHub/GitLab
-2. **Agent loop** - The AI agent iteratively:
-   - Analyzes code changes line-by-line using the unified diff format
-   - Identifies potential issues (bugs, security, performance, code quality)
-   - Uses tools to gather additional context when needed
-   - Builds a comprehensive review with specific file:line references
-3. **Generates review** - Produces structured feedback with:
-   - Critical issues that must be fixed
-   - Warnings about potential problems
-   - Code examples showing how to fix issues
-   - Positive feedback on well-written code
-4. **(Optional) Posts comment** - Can automatically post the review as a PR/MR comment in CI/CD
-
-The agent autonomously decides which parts of the code need deeper analysis and can run up to 20 iterations (configurable) to thoroughly review complex changes.
-
-## Installation
-
-### Using Docker (Recommended)
+## Quick Start
 
 ```bash
-# Pull from GitHub Container Registry
-docker pull ghcr.io/mr-karan/hodor:latest
+# Install
+pip install uv
+git clone https://github.com/mr-karan/hodor
+cd hodor && uv sync
 
-# Run directly
+# Authenticate
+gh auth login        # GitHub
+glab auth login      # GitLab (optional)
+
+# Set API key
+export ANTHROPIC_API_KEY=sk-ant-your_key_here
+
+# Review a PR
+uv run hodor https://github.com/owner/repo/pull/123
+
+# Auto-post review comment
+uv run hodor https://github.com/owner/repo/pull/123 --post
+```
+
+**Docker**:
+```bash
 docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
+  -e ANTHROPIC_API_KEY=your_key \
   ghcr.io/mr-karan/hodor:latest \
   https://github.com/owner/repo/pull/123
 ```
 
-### Using Source
+## How It Works
+
+1. Clones repo & checks out PR branch
+2. AI agent runs `git diff`, `grep`, analyzes changes
+3. Generates markdown review with file:line references
+4. Posts comment (if `--post` flag used)
+
+Uses [OpenHands SDK](https://github.com/OpenHands/agent-sdk) for autonomous agent execution.
+
+## Installation
+
+### Docker (Recommended)
 
 ```bash
-# Clone the repository
+docker pull ghcr.io/mr-karan/hodor:latest
+
+docker run --rm \
+  -e ANTHROPIC_API_KEY=your_key \
+  ghcr.io/mr-karan/hodor:latest \
+  https://github.com/owner/repo/pull/123
+```
+
+### From Source
+
+```bash
+# Install dependencies
+pip install uv
 git clone https://github.com/mr-karan/hodor
-cd hodor
+cd hodor && uv sync
 
-# Sync dependencies (recommended - uses uv.lock for reproducibility)
-uv sync
+# Authenticate
+gh auth login        # GitHub
+glab auth login      # GitLab
 
-# Or sync with all extras including dev dependencies
-uv sync --all-extras
+# Set API key
+export ANTHROPIC_API_KEY=sk-ant-your_key_here
 
-# Run hodor
-uv run hodor --help
-```
-
-## Quick Start
-
-### 1. Set up your LLM API key
-
-```bash
-# Copy the example environment file
-cp .env.example .env
-
-# Edit .env and add your LLM API key
-echo "ANTHROPIC_API_KEY=sk-ant-your_key_here" >> .env
-# OR
-echo "OPENAI_API_KEY=sk-your_key_here" >> .env
-```
-
-### 2. (Optional) Set up GitHub/GitLab token
-
-A token is **optional** for public repositories but **recommended** for:
-- Higher rate limits (5,000/hour vs 60/hour)
-- Accessing private repositories
-- Avoiding rate limit errors on large PRs
-
-```bash
-# For GitHub
-echo "GITHUB_TOKEN=ghp_your_token_here" >> .env
-
-# For GitLab
-echo "GITLAB_TOKEN=glpat-your_token_here" >> .env
-```
-
-**Creating a GitHub Token:**
-
-1. Go to **GitHub Settings** → **Developer settings** → **Personal access tokens** → **Fine-grained tokens**
-2. Click **"Generate new token"**
-3. Configure:
-   - **Token name**: `hodor`
-   - **Repository access**: Choose "Public Repositories (read-only)" or select specific repos
-   - **Permissions** (Repository permissions):
-     - ✅ **Pull requests**: Read-only
-     - ✅ **Contents**: Read-only (for private repos)
-     - ✅ **Metadata**: Read-only (auto-granted)
-     - ✅ **Commit statuses**: Read-only
-4. Click **"Generate token"** and copy it
-
-**Alternative: Classic Token**
-- Go to **Personal access tokens** → **Tokens (classic)**
-- Select scopes: `repo` (for private) or `public_repo` (for public only)
-
-See [GitHub's documentation](https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens?apiVersion=2022-11-28) for details.
-
-### 3. Review a pull request
-
-```bash
-# Using uv (recommended)
+# Run
 uv run hodor https://github.com/owner/repo/pull/123
-
-# With custom model
-uv run hodor https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5
-
-# Verbose mode
-uv run hodor https://github.com/owner/repo/pull/123 -v
 ```
 
-## Usage Examples
+## Usage
 
-### Review a public PR (no token needed)
-
-**Using Docker:**
+### Basic Review
 ```bash
-# GitHub
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  ghcr.io/mr-karan/hodor:latest \
-  https://github.com/mr-karan/logchef/pull/57
+# Review and print to console
+hodor https://github.com/owner/repo/pull/123
 
-# GitLab
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  ghcr.io/mr-karan/hodor:latest \
-  https://gitlab.com/owner/project/-/merge_requests/123
+# Auto-post as PR comment
+hodor https://github.com/owner/repo/pull/123 --post
+
+# Verbose mode (see agent activity)
+hodor https://github.com/owner/repo/pull/123 -v
 ```
 
-**Using source:**
+### GitLab & Self-Hosted
 ```bash
-# GitHub
-uv run hodor https://github.com/mr-karan/logchef/pull/57
+# GitLab.com
+hodor https://gitlab.com/owner/project/-/merge_requests/123 --post
 
-# GitLab
-uv run hodor https://gitlab.com/owner/project/-/merge_requests/123
+# Self-hosted GitLab (auto-detected from URL)
+hodor https://gitlab.yourcompany.com/team/project/-/merge_requests/42 --post
 ```
 
-### Review with specific model
-
-**Using Docker:**
+### Custom Options
 ```bash
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  ghcr.io/mr-karan/hodor:latest \
-  https://github.com/owner/repo/pull/123 \
-  --model claude-sonnet-4-5
+# Use different model
+hodor https://github.com/owner/repo/pull/123 --model gpt-5
+
+# Custom prompt
+hodor https://github.com/owner/repo/pull/123 \
+  --prompt "Focus only on security issues"
+
+# Reuse workspace (faster for multiple PRs from same repo)
+hodor https://github.com/owner/repo/pull/123 --workspace /tmp/workspace
+hodor https://github.com/owner/repo/pull/124 --workspace /tmp/workspace  # Reuses!
 ```
 
-**Using source:**
+### Extended Thinking (Slow!)
 ```bash
-# Using GPT-5
-uv run hodor https://github.com/owner/repo/pull/123 --model gpt-5
-
-# Using Claude Sonnet
-uv run hodor https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5
-```
-
-### Review a private PR/MR
-
-**Using Docker:**
-```bash
-# GitHub
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  -e GITHUB_TOKEN=ghp_xxxxx \
-  ghcr.io/mr-karan/hodor:latest \
-  https://github.com/myorg/private-repo/pull/456
-
-# GitLab
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  -e GITLAB_TOKEN=glpat-xxxxx \
-  ghcr.io/mr-karan/hodor:latest \
-  https://gitlab.com/myorg/private-project/-/merge_requests/789
-```
-
-**Using source:**
-```bash
-# GitHub
-uv run hodor https://github.com/myorg/private-repo/pull/456 --token ghp_xxxxx
-
-# GitLab
-uv run hodor https://gitlab.com/myorg/private-project/-/merge_requests/789 --token glpat-xxxxx
-```
-
-### Custom parameters
-```bash
-uv run hodor https://github.com/owner/repo/pull/123 \
-  --max-iterations 30 \
-  --max-workers 20 \
-  -v
-```
-
-### Post review as comment
-```bash
-# Post review as a comment on the PR/MR (useful for CI/CD)
-uv run hodor https://github.com/owner/repo/pull/123 --post-comment
-```
-
-### Self-hosted GitLab
-```bash
-# Hodor automatically detects and supports self-hosted GitLab instances
-# Just provide the MR URL from your instance
-uv run hodor https://gitlab.yourcompany.com/team/project/-/merge_requests/42
-
-# With Docker
-docker run --rm \
-  -e ANTHROPIC_API_KEY=your_key_here \
-  -e GITLAB_TOKEN=glpat-your-token \
-  ghcr.io/mr-karan/hodor:latest \
-  https://gitlab.yourcompany.com/team/project/-/merge_requests/42
-```
-
-**Note**: The GitLab URL is automatically extracted from the MR URL, so no additional configuration is needed for self-hosted instances.
-
-### Custom Prompts
-
-Hodor allows you to customize the review prompt to focus on specific concerns (security, performance, etc.):
-
-**Using inline prompt:**
-```bash
-uv run hodor https://github.com/owner/repo/pull/123 \
-  --prompt "Focus exclusively on security vulnerabilities. Check for SQL injection, XSS, and auth bypasses."
-```
-
-**Using prompt from file:**
-```bash
-# Use a pre-defined security-focused prompt
-uv run hodor https://github.com/owner/repo/pull/123 \
-  --prompt-file prompts/security-focused.txt
-
-# Or your own custom prompt file
-uv run hodor https://github.com/owner/repo/pull/123 \
-  --prompt-file .github/review-prompt.txt
-```
-
-**Example custom prompt files:**
-- `prompts/security-focused.txt` - Focus on security vulnerabilities
-- `prompts/performance-focused.txt` - Focus on performance issues
-
-### Reasoning Effort
-
-Control how deeply the model thinks about the code (for reasoning-capable models):
-
-```bash
-# Quick review (faster, less thorough)
-uv run hodor https://github.com/owner/repo/pull/123 --reasoning-effort low
-
-# Balanced (moderate speed and quality)
-uv run hodor https://github.com/owner/repo/pull/123 --reasoning-effort medium
-
-# Deep review (slower, more thorough - default)
-uv run hodor https://github.com/owner/repo/pull/123 --reasoning-effort high
+# WARNING: Takes 10-15 minutes (vs 1-3 min default)
+hodor https://github.com/owner/repo/pull/123 --reasoning-effort high
 ```
 
 ## CI/CD Integration
 
-Hodor can automatically review pull requests/merge requests and post comments in your CI/CD pipeline.
-
-### GitLab CI
-
-**Quick Setup:**
-
-1. Copy `.gitlab-ci.yml` to your repository root
-2. Add CI/CD variables in **Settings → CI/CD → Variables**:
-   - `GITLAB_TOKEN` - GitLab access token with `api` scope
-   - `ANTHROPIC_API_KEY` - Your Anthropic API key (or `OPENAI_API_KEY`)
-3. Create a merge request - Hodor will review and comment automatically!
-
-**Example `.gitlab-ci.yml`:**
-
-```yaml
-stages:
-  - review
-
-hodor-review:
-  stage: review
-  image:
-    name: ghcr.io/mr-karan/hodor:latest
-    entrypoint: [""]  # Override ENTRYPOINT to allow shell commands
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-  script:
-    - MR_URL="${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}"
-    - MODEL="${HODOR_MODEL:-gpt-5}"
-    - |
-      hodor "$MR_URL" \
-        --model "$MODEL" \
-        --token "$GITLAB_TOKEN" \
-        --post-comment \
-        -v
-  allow_failure: true
-  timeout: 15m
-```
-
-See [.gitlab/README-CI.md](.gitlab/README-CI.md) for detailed setup instructions.
-
 ### GitHub Actions
-
-**Example `.github/workflows/hodor.yml`:**
-
 ```yaml
+# .github/workflows/hodor.yml
 name: Code Review
-
 on:
   pull_request:
     types: [opened, synchronize]
@@ -336,55 +140,81 @@ on:
 jobs:
   review:
     runs-on: ubuntu-latest
-    container:
-      image: ghcr.io/mr-karan/hodor:latest
+    container: ghcr.io/mr-karan/hodor:latest
     steps:
       - name: Run review
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          hodor \
-            "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" \
-            --model gpt-5 \
-            --token "$GITHUB_TOKEN" \
-            --post-comment
+          hodor "https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}" --post
 ```
 
-**Required Secrets** (Settings → Secrets and variables → Actions):
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` - Your LLM API key
-- `GITHUB_TOKEN` - Automatically provided by GitHub Actions
+Set `ANTHROPIC_API_KEY` in Settings → Secrets. `GITHUB_TOKEN` is auto-provided.
 
-## Configuration Options
+### GitLab CI
+```yaml
+# .gitlab-ci.yml
+hodor-review:
+  image: ghcr.io/mr-karan/hodor:latest
+  stage: test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - hodor "${CI_PROJECT_URL}/-/merge_requests/${CI_MERGE_REQUEST_IID}" --post
+  allow_failure: true
+```
+
+Set `GITLAB_TOKEN` and `ANTHROPIC_API_KEY` in Settings → CI/CD → Variables.
+
+See [AUTOMATED_REVIEWS.md](./AUTOMATED_REVIEWS.md) for advanced setup.
+
+## Configuration
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `--max-iterations` | 20 | Maximum agent loop iterations |
-| `--max-workers` | 15 | Maximum parallel tool calls |
-| `--token` | $GITHUB_TOKEN or $GITLAB_TOKEN | API token (optional for public repos) |
-| `--model` | gpt-5 | LLM model to use |
-| `--temperature` | 0.0* | LLM temperature (auto-adjusted for GPT-5/O3) |
-| `--reasoning-effort` | high | Reasoning effort level (low/medium/high) |
-| `--prompt` | (default prompt) | Custom inline prompt text |
-| `--prompt-file` | (none) | Path to file with custom prompt |
-| `--post-comment` | False | Post review as comment on PR/MR (for CI/CD) |
-| `-v, --verbose` | False | Enable verbose logging |
+| `--model` | `claude-sonnet-4-5` | LLM model |
+| `--temperature` | `0.0` | Sampling temperature (0=deterministic) |
+| `--reasoning-effort` | (off) | Extended thinking: `low`/`medium`/`high` (slow!) |
+| `--workspace` | (temp) | Reuse workspace dir for multiple PRs |
+| `--post` | off | Auto-post review as PR comment |
+| `-v` | off | Verbose logging |
 
-*Note: Temperature is automatically handled for models like GPT-5 that don't support temperature=0.0
+**Environment Variables:**
+- `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` - LLM API key (required)
+- `GITHUB_TOKEN` - GitHub auth (use `gh auth login`)
+- `GITLAB_TOKEN` - GitLab auth (use `glab auth login`)
+- `GITLAB_HOST` - For self-hosted GitLab
 
-**Token Environment Variables**:
-- GitHub: Set `GITHUB_TOKEN` environment variable
-- GitLab: Set `GITLAB_TOKEN` environment variable
-- The tool auto-detects the platform from the URL
+**Defaults:**
+- Model: Claude Sonnet 4.5
+- Temperature: 0.0 (deterministic)
+- Reasoning: Disabled (fast, 1-3 min per review)
+- Workspace: Temp dir (cleaned up after)
 
-## Supported Models
+**Supported Models:**
+- Anthropic: `claude-sonnet-4-5`, `claude-opus-4`
+- OpenAI: `gpt-5`, `gpt-4-turbo`, `o3-mini`
+- Google: `gemini-2.5-pro`, `gemini-2.5-flash`
+- Custom: Any OpenAI-compatible API (set `LLM_BASE_URL`)
 
-Any model supported by [LiteLLM](https://docs.litellm.ai/docs/providers):
+## Metrics
 
-- **Anthropic**: `claude-sonnet-4-5` (latest Sonnet), `claude-opus-4` (highest quality)
-- **OpenAI**: `gpt-5` (latest GPT-5), `o3-mini` (reasoning optimized)
-- **Google**: `gemini-2.5-pro`, `gemini-2.5-flash`
-- **Open Source**: `ollama/llama3`, `together_ai/mixtral-8x7b`
+Every review shows detailed metrics:
+```
+============================================================
+📊 Token Usage Metrics:
+  • Input tokens:       3,820,000
+  • Output tokens:      23,980
+  • Cache hits:         3,650,000 (95.5%)
+  • Total tokens:       3,852,130
+
+💰 Cost Estimate:      $2.0948
+⏱️  Review Time:        2m 34s
+============================================================
+```
+
+Cache hit rate > 90% = efficient! Use `-v` for detailed logging.
 
 ## Contributing
 

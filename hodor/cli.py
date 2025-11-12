@@ -1,21 +1,27 @@
-"""Command-line interface for PR Review Agent."""
+"""Command-line interface for Hodor PR Review Agent."""
 
 import logging
 import os
 import sys
+from pathlib import Path
 
 import click
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .agent import review_pr, post_review_comment, detect_platform, configure_litellm_logging
+from .agent import detect_platform, post_review_comment, review_pr
 
 console = Console()
 
 
 def parse_llm_args(ctx, param, value):
-    """Parse --llm-* arguments into a dictionary."""
+    """Parse --llm arguments into a dictionary.
+
+    Supports formats like:
+    - --llm key=value
+    - --llm flag  (sets to True)
+    """
     if not value:
         return {}
 
@@ -40,64 +46,110 @@ def parse_llm_args(ctx, param, value):
 
 @click.command()
 @click.argument("pr_url")
-@click.option("--max-iterations", default=20, type=int, help="Maximum number of agentic loop iterations")
-@click.option("--max-workers", default=15, type=int, help="Maximum number of parallel tool calls")
-@click.option("--token", default=None, help="GitHub/GitLab API token (or set GITHUB_TOKEN/GITLAB_TOKEN env var)")
-@click.option("--model", default="gpt-5", help="LLM model to use")
-@click.option("--temperature", default=0.0, type=float, help="LLM temperature (0.0-2.0)")
-@click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
-@click.option("--llm", multiple=True, help="Additional LLM parameters (format: key=value)")
-@click.option("--post-comment", is_flag=True, help="Post the review as a comment on the PR/MR (useful for CI/CD)")
-@click.option("--prompt", default=None, help="Custom inline prompt text (overrides default)")
-@click.option("--prompt-file", default=None, type=click.Path(exists=True), help="Path to file containing custom prompt")
+@click.option(
+    "--model",
+    default="anthropic/claude-sonnet-4-5-20250929",
+    help="LLM model to use (default: Claude Sonnet 4.5)",
+)
+@click.option(
+    "--temperature",
+    default=None,
+    type=float,
+    help="LLM temperature (0.0-2.0). Auto-selected if not specified based on model capabilities.",
+)
 @click.option(
     "--reasoning-effort",
     type=click.Choice(["low", "medium", "high"], case_sensitive=False),
     default=None,
-    help="Reasoning effort level (default: high)",
+    help="Reasoning effort level for models that support extended thinking (e.g., Claude, GPT-5)",
+)
+@click.option(
+    "--verbose",
+    "-v",
+    is_flag=True,
+    help="Enable verbose logging (shows OpenHands agent activity)",
+)
+@click.option(
+    "--llm",
+    multiple=True,
+    callback=parse_llm_args,
+    help="Additional LLM parameters in key=value format (can be specified multiple times)",
+)
+@click.option(
+    "--post/--no-post",
+    default=False,
+    help="Post the review directly to the PR/MR as a comment (useful for CI/CD). Default: no-post (print to stdout)",
+)
+@click.option(
+    "--prompt",
+    default=None,
+    help="Custom inline prompt text (overrides default and any prompt file)",
+)
+@click.option(
+    "--prompt-file",
+    default=None,
+    type=click.Path(exists=True),
+    help="Path to file containing custom prompt (see prompts/ directory for examples)",
+)
+@click.option(
+    "--workspace",
+    default=None,
+    type=click.Path(),
+    help="Workspace directory to use (creates temp dir if not specified). Reuses workspace if same repo.",
 )
 def main(
-    pr_url,
-    max_iterations,
-    max_workers,
-    token,
-    model,
-    temperature,
-    verbose,
-    llm,
-    post_comment,
-    prompt,
-    prompt_file,
-    reasoning_effort,
+    pr_url: str,
+    model: str,
+    temperature: float | None,
+    reasoning_effort: str | None,
+    verbose: bool,
+    llm: dict,
+    post: bool,
+    prompt: str | None,
+    prompt_file: str | None,
+    workspace: str | None,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
 
-    Examples:
+    Hodor uses OpenHands SDK to run an AI agent that clones the repository,
+    checks out the PR branch, and analyzes the code using bash tools (gh, glab, git).
 
-        \b
-        # Review GitHub PR
+    \b
+    Examples:
+        # Review GitHub PR (output to console)
         hodor https://github.com/owner/repo/pull/123
 
-        \b
-        # Review GitLab MR
-        hodor https://gitlab.com/owner/project/-/merge_requests/456
+        # Review and post directly to PR
+        hodor https://github.com/owner/repo/pull/123 --post
 
-        \b
-        # With custom model
-        hodor https://github.com/owner/repo/pull/123 --model claude-sonnet-4-5
+        # Review GitLab MR (self-hosted)
+        export GITLAB_HOST=gitlab.example.com
+        hodor https://gitlab.example.com/owner/project/-/merge_requests/456
 
-        \b
-        # With private repo token (GitHub)
-        hodor https://github.com/owner/repo/pull/123 --token ghp_xxxxx
+        # Custom model with reasoning
+        hodor URL --model anthropic/claude-opus-4 --reasoning-effort high
 
-        \b
-        # With private repo token (GitLab)
-        hodor https://gitlab.com/owner/project/-/merge_requests/456 --token glpat-xxxxx
+        # Custom prompt
+        hodor URL --prompt-file prompts/security-focused.txt
 
-        \b
-        # Verbose mode
-        hodor https://github.com/owner/repo/pull/123 -v
+        # Additional LLM params
+        hodor URL --llm max_tokens=8000 --llm stop="```"
+
+    \b
+    Environment Variables:
+        LLM_API_KEY or ANTHROPIC_API_KEY or OPENAI_API_KEY - LLM API key (required)
+        LLM_BASE_URL - Custom LLM endpoint (optional)
+        GITHUB_TOKEN - GitHub API token (for gh CLI authentication)
+        GITLAB_TOKEN - GitLab API token (for glab CLI authentication)
+        GITLAB_HOST - GitLab host for self-hosted instances (default: gitlab.com)
+
+    \b
+    Authentication:
+        Hodor uses gh and glab CLIs for GitHub and GitLab respectively.
+        Ensure you've authenticated:
+        - GitHub: gh auth login  or set GITHUB_TOKEN
+        - GitLab: glab auth login  or set GITLAB_TOKEN + GITLAB_HOST
     """
     # Configure logging
     if verbose:
@@ -105,77 +157,93 @@ def main(
     else:
         logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
-    configure_litellm_logging(verbose)
+    # Check platform and token availability
+    platform = detect_platform(pr_url)
+    github_token = os.getenv("GITHUB_TOKEN")
+    gitlab_token = os.getenv("GITLAB_TOKEN")
 
-    # Auto-detect token from environment variables if not provided
-    if token is None:
-        token = os.getenv("GITLAB_TOKEN") or os.getenv("GITHUB_TOKEN")
+    if platform == "github" and not github_token:
+        console.print(
+            "[yellow]⚠️  Warning: GITHUB_TOKEN not set. You may encounter rate limits or authentication issues.[/yellow]"
+        )
+        console.print("[dim]   Set GITHUB_TOKEN environment variable or run: gh auth login[/dim]\n")
+    elif platform == "gitlab" and not gitlab_token:
+        console.print("[yellow]⚠️  Warning: GITLAB_TOKEN not set. You may encounter authentication issues.[/yellow]")
+        console.print("[dim]   Set GITLAB_TOKEN environment variable or run: glab auth login[/dim]\n")
 
-    # Warn if using wrong token for platform
-    if token:
-        platform = detect_platform(pr_url)
-        gitlab_token = os.getenv("GITLAB_TOKEN")
-        github_token = os.getenv("GITHUB_TOKEN")
+    # Parse prompt file path
+    prompt_file_path = Path(prompt_file) if prompt_file else None
 
-        if platform == "gitlab" and github_token and not gitlab_token:
-            console.print(
-                "[yellow]⚠️  Warning: Detected GitLab URL but only GITHUB_TOKEN is set. You may need to set GITLAB_TOKEN instead.[/yellow]"
-            )
-        elif platform == "github" and gitlab_token and not github_token:
-            console.print(
-                "[yellow]⚠️  Warning: Detected GitHub URL but only GITLAB_TOKEN is set. You may need to set GITHUB_TOKEN instead.[/yellow]"
-            )
-
-    # Parse additional LLM arguments
-    llm_config = parse_llm_args(None, None, llm)
-    llm_config["model"] = model
-    llm_config["temperature"] = temperature
-
-    console.print("\n[bold cyan]🚪 Hodor[/bold cyan]")
-    console.print(f"[dim]Reviewing: {pr_url}[/dim]")
-    console.print(f"[dim]Model: {model}[/dim]\n")
+    console.print("\n[bold cyan]🚪 Hodor - AI Code Review Agent[/bold cyan]")
+    console.print(f"[dim]Platform: {platform.upper()}[/dim]")
+    console.print(f"[dim]PR URL: {pr_url}[/dim]")
+    console.print(f"[dim]Model: {model}[/dim]")
+    if reasoning_effort:
+        console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
+    console.print()
 
     try:
         with Progress(
-            SpinnerColumn(), TextColumn("[progress.description]{task.description}"), console=console, transient=True
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
         ) as progress:
-            _task = progress.add_task("Analyzing PR...", total=None)
+            task = progress.add_task("Setting up workspace and running review...", total=None)
 
             # Run the review
-            result = review_pr(
+            workspace_path = Path(workspace) if workspace else None
+            review_markdown = review_pr(
                 pr_url=pr_url,
-                max_iterations=max_iterations,
-                max_workers=max_workers,
-                token=token,
-                custom_prompt=prompt,
-                prompt_file=prompt_file,
+                model=model,
+                temperature=temperature,
                 reasoning_effort=reasoning_effort,
-                **llm_config,
+                custom_prompt=prompt,
+                prompt_file=prompt_file_path,
+                user_llm_params=llm,
+                verbose=verbose,
+                cleanup=workspace is None,  # Only cleanup if using temp dir
+                workspace_dir=workspace_path,
             )
 
+            progress.update(task, description="Review complete!")
             progress.stop()
 
-        # Display result as markdown
-        console.print("\n[bold green]✅ Review Complete[/bold green]\n")
-        md = Markdown(result)
-        console.print(md)
-
-        # Post comment if requested
-        if post_comment:
-            console.print("\n[cyan]Posting review as comment...[/cyan]")
+        # Display result
+        if post:
+            # Post to PR/MR
+            console.print("\n[cyan]📤 Posting review to PR/MR...[/cyan]\n")
             try:
-                comment_result = post_review_comment(pr_url=pr_url, review_text=result, token=token, model=model)
+                result = post_review_comment(
+                    pr_url=pr_url,
+                    review_text=review_markdown,
+                    model=model,
+                )
 
-                if comment_result.get("success"):
-                    console.print("[bold green]✅ Comment posted successfully![/bold green]")
-                    console.print(f"[dim]Comment URL: {comment_result.get('comment_url')}[/dim]")
+                if result.get("success"):
+                    console.print("[bold green]✅ Review posted successfully![/bold green]")
+                    if platform == "github":
+                        console.print(f"[dim]   PR: {pr_url}[/dim]")
+                    else:
+                        console.print(f"[dim]   MR: {pr_url}[/dim]")
                 else:
-                    console.print(f"[bold red]❌ Failed to post comment:[/bold red] {comment_result.get('error')}")
+                    console.print(f"[bold red]❌ Failed to post review:[/bold red] {result.get('error')}")
+                    console.print("\n[yellow]Review output:[/yellow]\n")
+                    console.print(Markdown(review_markdown))
+
             except Exception as e:
-                console.print(f"[bold red]❌ Error posting comment:[/bold red] {str(e)}")
+                console.print(f"[bold red]❌ Error posting review:[/bold red] {str(e)}")
+                console.print("\n[yellow]Review output:[/yellow]\n")
+                console.print(Markdown(review_markdown))
+
+        else:
+            # Print to console
+            console.print("[bold green]✅ Review Complete[/bold green]\n")
+            console.print(Markdown(review_markdown))
+            console.print("\n[dim]💡 Tip: Use --post to automatically post this review to the PR/MR[/dim]")
 
     except KeyboardInterrupt:
-        console.print("\n[yellow]Review cancelled by user[/yellow]")
+        console.print("\n[yellow]⚠️  Review cancelled by user[/yellow]")
         sys.exit(1)
     except Exception as e:
         console.print(f"\n[bold red]❌ Error:[/bold red] {str(e)}")

@@ -1,0 +1,415 @@
+"""Workspace management for PR review operations.
+
+Handles cloning repositories and checking out PR branches for review.
+"""
+
+import logging
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+Platform = Literal["github", "gitlab"]
+
+
+class WorkspaceError(Exception):
+    """Raised when workspace setup fails."""
+
+    pass
+
+
+def _is_same_repo(workspace: Path, platform: Platform, owner: str, repo: str) -> bool:
+    """Check if workspace contains the same repository.
+
+    Args:
+        workspace: Workspace directory
+        platform: "github" or "gitlab"
+        owner: Repository owner/group
+        repo: Repository name
+
+    Returns:
+        True if workspace has the same repo, False otherwise
+    """
+    git_dir = workspace / ".git"
+    if not git_dir.exists():
+        return False
+
+    try:
+        # Get remote URL
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=workspace,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        remote_url = result.stdout.strip()
+
+        # Check if it matches expected repo
+        repo_identifier = f"{owner}/{repo}"
+        return repo_identifier in remote_url
+    except subprocess.CalledProcessError:
+        return False
+
+
+def setup_workspace(
+    platform: Platform,
+    owner: str,
+    repo: str,
+    pr_number: str,
+    base_branch: str | None = None,
+    working_dir: Path | None = None,
+    reuse: bool = True,
+) -> Path:
+    """Setup workspace by cloning repo and checking out PR branch.
+
+    Args:
+        platform: "github" or "gitlab"
+        owner: Repository owner/group
+        repo: Repository name
+        pr_number: Pull request number
+        base_branch: Base branch name (optional, auto-detected if not provided)
+        working_dir: Directory to use (if None, creates temp directory)
+        reuse: If True and workspace exists with same repo, reuse it (faster)
+
+    Returns:
+        Path to workspace directory
+
+    Raises:
+        WorkspaceError: If setup fails
+    """
+    try:
+        if working_dir is None:
+            workspace = Path(tempfile.mkdtemp(prefix="hodor-review-"))
+            logger.info(f"Created temporary workspace: {workspace}")
+        else:
+            workspace = working_dir
+            workspace.mkdir(parents=True, exist_ok=True)
+
+            # Check if we can reuse existing workspace
+            if reuse and _is_same_repo(workspace, platform, owner, repo):
+                logger.info(f"Reusing existing workspace: {workspace}")
+                # Just fetch latest and checkout PR branch
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=workspace,
+                    check=True,
+                    capture_output=True,
+                )
+                logger.info("Fetched latest changes")
+            else:
+                logger.info(f"Using workspace: {workspace}")
+
+        if platform == "github":
+            _setup_github_workspace(workspace, owner, repo, pr_number)
+        elif platform == "gitlab":
+            _setup_gitlab_workspace(workspace, owner, repo, pr_number)
+        else:
+            raise WorkspaceError(f"Unsupported platform: {platform}")
+
+        logger.info(f"Workspace ready at: {workspace}")
+        return workspace
+
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Command failed: {e.cmd}")
+        logger.error(f"Output: {e.output if hasattr(e, 'output') else 'N/A'}")
+        raise WorkspaceError(f"Failed to setup workspace: {e}") from e
+    except Exception as e:
+        logger.error(f"Workspace setup failed: {e}")
+        raise WorkspaceError(f"Failed to setup workspace: {e}") from e
+
+
+def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: str) -> None:
+    """Setup GitHub PR workspace using gh CLI.
+
+    Args:
+        workspace: Target workspace directory
+        owner: Repository owner
+        repo: Repository name
+        pr_number: PR number
+    """
+    logger.info(f"Setting up GitHub workspace for {owner}/{repo}/pull/{pr_number}")
+
+    # Check if gh CLI is available
+    try:
+        subprocess.run(
+            ["gh", "version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        raise WorkspaceError(
+            f"GitHub CLI (gh) is not available. Please install it: https://cli.github.com\n" f"Error: {e}"
+        ) from e
+
+    # Check if we have authentication credentials
+    github_token = os.getenv("GITHUB_TOKEN")
+    if not github_token:
+        logger.warning("GITHUB_TOKEN not set. Ensure you're authenticated with: gh auth login")
+
+    # Clone repository
+    logger.info(f"Cloning repository {owner}/{repo}...")
+    try:
+        subprocess.run(
+            ["gh", "repo", "clone", f"{owner}/{repo}", str(workspace)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
+        logger.error(f"gh repo clone failed: {error_msg}")
+        raise WorkspaceError(
+            f"Failed to clone repository {owner}/{repo}\n"
+            f"Command: gh repo clone {owner}/{repo}\n"
+            f"Error: {error_msg}\n"
+            f"Troubleshooting:\n"
+            f"  1. Verify repository exists: https://github.com/{owner}/{repo}\n"
+            f"  2. Check authentication: gh auth status\n"
+            f"  3. Verify GITHUB_TOKEN is set and has repo access"
+        ) from e
+
+    # Change to workspace directory
+    original_dir = Path.cwd()
+    os.chdir(workspace)
+
+    try:
+        # Checkout PR branch
+        logger.info(f"Checking out PR #{pr_number}...")
+        try:
+            subprocess.run(
+                ["gh", "pr", "checkout", pr_number],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
+            logger.error(f"gh pr checkout failed: {error_msg}")
+            raise WorkspaceError(
+                f"Failed to checkout PR #{pr_number}\n"
+                f"Command: gh pr checkout {pr_number}\n"
+                f"Error: {error_msg}\n"
+                f"Verify PR exists: https://github.com/{owner}/{repo}/pull/{pr_number}"
+            ) from e
+
+        # Get PR info for logging
+        try:
+            result = subprocess.run(
+                ["gh", "pr", "view", pr_number, "--json", "headRefName,baseRefName"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            import json
+
+            pr_info = json.loads(result.stdout)
+            logger.info(f"Checked out PR branch: {pr_info.get('headRefName')}")
+            logger.info(f"Base branch: {pr_info.get('baseRefName')}")
+        except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
+            # Non-critical - just log and continue
+            logger.warning(f"Could not fetch PR metadata: {e}")
+
+    finally:
+        # Restore original directory
+        os.chdir(original_dir)
+
+
+def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: str) -> None:
+    """Setup GitLab MR workspace using glab CLI.
+
+    Supports self-hosted GitLab instances via GITLAB_HOST environment variable.
+
+    Args:
+        workspace: Target workspace directory
+        owner: Repository owner/group
+        repo: Repository name
+        pr_number: Merge request number
+    """
+    gitlab_host = os.getenv("GITLAB_HOST", "gitlab.com")
+    logger.info(f"Setting up GitLab workspace for {owner}/{repo}/merge_requests/{pr_number}")
+    logger.info(f"GitLab host: {gitlab_host}")
+
+    # Check if glab CLI is available
+    # Note: We skip auth status check because `glab auth status` checks ALL hosts
+    # and fails if any host (like gitlab.com) has issues, even if our target host is fine.
+    # Instead, we'll let the git clone operation fail naturally if auth is bad.
+    try:
+        subprocess.run(
+            ["glab", "version"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        raise WorkspaceError(
+            f"GitLab CLI (glab) is not available. Please install it: https://gitlab.com/gitlab-org/cli\n" f"Error: {e}"
+        ) from e
+
+    # Check if we have authentication credentials
+    gitlab_token = os.getenv("GITLAB_TOKEN")
+    if not gitlab_token:
+        logger.warning(
+            f"GITLAB_TOKEN not set. Ensure you're authenticated with: glab auth login --hostname {gitlab_host}"
+        )
+
+    # Clone repository
+    # Format: owner/repo or group/subgroup/repo
+    repo_full_path = f"{owner}/{repo}"
+    logger.info(f"Cloning repository {repo_full_path}...")
+
+    # Use HTTPS clone URL for consistency
+    clone_url = f"https://{gitlab_host}/{owner}/{repo}.git"
+
+    subprocess.run(
+        ["git", "clone", clone_url, str(workspace)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    # Change to workspace directory
+    original_dir = Path.cwd()
+    os.chdir(workspace)
+
+    try:
+        # GitLab uses "merge requests" (MR) instead of "pull requests" (PR)
+        logger.info(f"Checking out MR !{pr_number}...")
+
+        # Get MR info to find the source branch
+        # Specify repo explicitly to avoid ambiguity
+        try:
+            # Prepare clean environment without GLAMOUR_STYLE (causes deprecation warnings in stdout)
+            glab_env = os.environ.copy()
+            glab_env["GITLAB_HOST"] = gitlab_host
+            glab_env.pop("GLAMOUR_STYLE", None)  # Remove if present to avoid warnings
+
+            result = subprocess.run(
+                [
+                    "glab",
+                    "mr",
+                    "view",
+                    pr_number,
+                    "--repo",
+                    repo_full_path,
+                    "-F",
+                    "json",  # glab uses -F json or --output json, not --json
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=glab_env,
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else "No error details available"
+            logger.error(f"glab mr view failed: {error_msg}")
+            raise WorkspaceError(
+                f"Failed to fetch MR info for !{pr_number} from {gitlab_host}/{repo_full_path}\n"
+                f"Command: glab mr view {pr_number} --repo {repo_full_path} -F json\n"
+                f"Error: {error_msg}\n"
+                f"Troubleshooting:\n"
+                f"  1. Verify MR exists: https://{gitlab_host}/{repo_full_path}/-/merge_requests/{pr_number}\n"
+                f"  2. Check authentication: glab auth status\n"
+                f"  3. Verify GITLAB_TOKEN is set for {gitlab_host}"
+            ) from e
+
+        import json
+
+        try:
+            # Parse JSON output, skipping any warning lines
+            # glab might still print warnings before JSON despite our env cleanup
+            output = result.stdout.strip()
+
+            # Find the first line that starts with '{' (JSON start)
+            json_start = output.find("{")
+            if json_start > 0:
+                logger.debug(f"Skipping non-JSON prefix in glab output: {output[:json_start]}")
+                output = output[json_start:]
+
+            mr_info = json.loads(output)
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse glab output: {result.stdout[:200]}")
+            raise WorkspaceError(f"glab returned invalid JSON: {e}") from e
+
+        source_branch = mr_info.get("source_branch")
+        target_branch = mr_info.get("target_branch")
+
+        if not source_branch:
+            raise WorkspaceError(
+                f"Could not determine source branch for MR !{pr_number}. "
+                f"MR info: {mr_info.get('title', 'N/A')} (state: {mr_info.get('state', 'unknown')})"
+            )
+
+        logger.info(f"Source branch: {source_branch}, Target branch: {target_branch}")
+
+        # Fetch all branches to ensure we have the source branch
+        try:
+            fetch_result = subprocess.run(
+                ["git", "fetch", "--all"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.debug(f"Git fetch completed: {fetch_result.stdout[:100]}")
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
+            logger.warning(f"Git fetch had issues (continuing anyway): {error_msg}")
+
+        # Checkout the source branch (try origin/branch first, then just branch name)
+        try:
+            logger.info(f"Attempting checkout: git checkout -b {source_branch} origin/{source_branch}")
+            subprocess.run(
+                ["git", "checkout", "-b", source_branch, f"origin/{source_branch}"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.info(f"Successfully checked out MR branch: {source_branch}")
+        except subprocess.CalledProcessError as e1:
+            # If that fails, try checking out the branch directly
+            logger.debug(
+                f"First checkout attempt failed, trying direct checkout: {e1.stderr if hasattr(e1, 'stderr') else ''}"
+            )
+            try:
+                subprocess.run(
+                    ["git", "checkout", source_branch],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                logger.info(f"Checked out existing branch: {source_branch}")
+            except subprocess.CalledProcessError as e2:
+                error_msg = e2.stderr if hasattr(e2, "stderr") and e2.stderr else str(e2)
+                logger.error(f"Failed to checkout branch {source_branch}: {error_msg}")
+                raise WorkspaceError(
+                    f"Failed to checkout MR branch '{source_branch}'\n"
+                    f"Tried:\n"
+                    f"  1. git checkout -b {source_branch} origin/{source_branch}\n"
+                    f"  2. git checkout {source_branch}\n"
+                    f"Error: {error_msg}\n"
+                    f"Available branches: Run 'git branch -a' in workspace to debug"
+                ) from e2
+
+    finally:
+        # Restore original directory
+        os.chdir(original_dir)
+
+
+def cleanup_workspace(workspace: Path) -> None:
+    """Clean up workspace directory.
+
+    Args:
+        workspace: Workspace directory to remove
+    """
+    import shutil
+
+    try:
+        if workspace.exists() and workspace.is_dir():
+            shutil.rmtree(workspace)
+            logger.info(f"Cleaned up workspace: {workspace}")
+    except Exception as e:
+        logger.warning(f"Failed to cleanup workspace {workspace}: {e}")

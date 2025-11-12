@@ -101,7 +101,7 @@ build:
 info:
     @echo "Hodor - AI-powered code review agent"
     @echo "=========================================="
-    @uv pip list | grep -E "(hodor|litellm|anthropic|PyGithub|python-gitlab)"
+    @uv pip list | grep -E "(hodor|openhands|anthropic)"
 
 # Run all checks and tests before committing
 pre-commit: fix check test

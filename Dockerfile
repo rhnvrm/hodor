@@ -1,6 +1,12 @@
 # Multi-stage build for smaller final image
 FROM python:3.13-slim AS builder
 
+# Install system dependencies needed for building (git is required for OpenHands SDK)
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install uv
 RUN pip install --no-cache-dir uv
 
@@ -25,9 +31,26 @@ RUN uv sync --no-dev --frozen --no-editable
 # Final stage
 FROM python:3.13-slim
 
-# Install git (needed for cloning repos in some scenarios)
+# Install system dependencies: git, gh CLI, glab CLI, and curl
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends git && \
+    apt-get install -y --no-install-recommends \
+        git \
+        curl \
+        ca-certificates \
+        gnupg \
+        wget && \
+    # Install GitHub CLI (gh)
+    mkdir -p /etc/apt/keyrings && \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | gpg --dearmor -o /etc/apt/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends gh && \
+    # Install GitLab CLI (glab)
+    curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v1.77.0/downloads/glab_1.77.0_linux_amd64.deb" -o /tmp/glab.deb && \
+    dpkg -i /tmp/glab.deb && \
+    rm /tmp/glab.deb && \
+    # Clean up
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Copy virtual environment from builder
@@ -45,9 +68,23 @@ ENV PYTHONUNBUFFERED=1
 
 # Create a non-root user for security
 RUN useradd -m -u 1000 hodor && \
-    chown -R hodor:hodor /app /opt/venv
+    chown -R hodor:hodor /app /opt/venv && \
+    # Create workspace directory for hodor user
+    mkdir -p /workspace /tmp/hodor && \
+    chown -R hodor:hodor /workspace /tmp/hodor
+
+# Add labels for metadata
+LABEL org.opencontainers.image.title="Hodor" \
+      org.opencontainers.image.description="AI-powered code review agent for GitHub and GitLab" \
+      org.opencontainers.image.url="https://github.com/mr-karan/hodor" \
+      org.opencontainers.image.source="https://github.com/mr-karan/hodor" \
+      org.opencontainers.image.vendor="Karan Sharma" \
+      org.opencontainers.image.licenses="MIT"
 
 USER hodor
+
+# Set default workspace directory
+ENV HODOR_WORKSPACE=/workspace
 
 # Set entrypoint
 ENTRYPOINT ["hodor"]

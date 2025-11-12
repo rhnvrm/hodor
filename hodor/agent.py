@@ -1,140 +1,28 @@
-"""Core agent loop for PR review."""
+"""Core agent for PR review using OpenHands SDK."""
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, field
-import json
 import logging
-from threading import Lock
+import os
+import subprocess
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
-import litellm
-from litellm import completion
+from openhands.sdk import Conversation
+from openhands.sdk.conversation import get_agent_final_response
 
-from .tools import github_tools
-from .tools.tool_executor import execute_tool, TOOLS
+from .llm import create_hodor_agent, get_api_key
+from .prompts.pr_review_prompt import build_pr_review_prompt
+from .workspace import cleanup_workspace, setup_workspace
 
 # Load environment variables
 load_dotenv()
-
-# Drop unsupported params for models that don't support them
-litellm.drop_params = True
-
-
-def configure_litellm_logging(verbose: bool = False) -> None:
-    """Keep LiteLLM chatter under control unless the user asks for it."""
-    try:
-        litellm.suppress_debug_info = not verbose
-    except AttributeError:
-        # Older LiteLLM versions may not expose this flag.
-        pass
-
-    litellm_logger = logging.getLogger("LiteLLM")
-    litellm_logger.setLevel(logging.INFO if verbose else logging.WARNING)
-
-
-# Default to quiet logging at import time
-configure_litellm_logging(False)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 Platform = Literal["github", "gitlab"]
-
-
-@dataclass
-class ReviewContext:
-    """State shared across tool calls to enforce coverage guarantees."""
-
-    owner: str
-    repo: str
-    pr_number: int
-    files_to_cover: set[str] = field(default_factory=set)
-    diffed_files: set[str] = field(default_factory=set)
-    lock: Lock = field(default_factory=Lock, repr=False)
-
-    def update_files_from_tool(self, tool_result: dict[str, Any]) -> None:
-        """Extract filenames that need diff coverage."""
-        files = tool_result.get("files") if isinstance(tool_result, dict) else None
-        if not files:
-            return
-
-        tracked: set[str] = set()
-        for file_entry in files:
-            filename = file_entry.get("filename")
-            if not filename:
-                continue
-            if self._is_reviewable_file(file_entry):
-                tracked.add(filename)
-                previous = file_entry.get("previous_filename")
-                if previous:
-                    tracked.add(previous)
-
-        if not tracked:
-            return
-
-        with self.lock:
-            if self.files_to_cover:
-                self.files_to_cover.update(tracked)
-            else:
-                self.files_to_cover = tracked
-
-    @staticmethod
-    def _is_reviewable_file(file_entry: dict[str, Any]) -> bool:
-        """Heuristic: only track files with text patches (skip binaries/docs)."""
-        patch = file_entry.get("patch")
-        if patch:
-            return True
-
-        filename = (file_entry.get("filename") or "").lower()
-        skip_suffixes = (
-            ".md",
-            ".rst",
-            ".txt",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-            ".svg",
-            ".ico",
-            ".pdf",
-            ".lock",
-        )
-        return not filename.endswith(skip_suffixes)
-
-    def mark_diffed(self, file_path: str | None, tool_result: dict[str, Any] | None = None) -> None:
-        """Record that we have inspected a file's diff."""
-        if not file_path:
-            return
-
-        with self.lock:
-            self.diffed_files.add(file_path)
-            if tool_result and isinstance(tool_result, dict):
-                previous = tool_result.get("previous_filename")
-                if previous:
-                    self.diffed_files.add(previous)
-
-    def missing_files(self) -> set[str]:
-        with self.lock:
-            return set(self.files_to_cover) - set(self.diffed_files)
-
-    def is_known_file(self, file_path: str | None) -> bool:
-        if not file_path:
-            return False
-        with self.lock:
-            if not self.files_to_cover:
-                return True
-            return file_path in self.files_to_cover
-
-    def process_tool_result(self, tool_name: str, arguments: dict[str, Any], result: dict[str, Any]) -> None:
-        """Update context based on tool output."""
-        if tool_name == "fetch_pr_files" and isinstance(result, dict):
-            self.update_files_from_tool(result)
-        elif tool_name == "fetch_file_diff" and isinstance(result, dict) and "error" not in result:
-            file_path = result.get("filename") or arguments.get("file_path")
-            self.mark_diffed(file_path, result)
 
 
 def detect_platform(pr_url: str) -> Platform:
@@ -151,75 +39,6 @@ def detect_platform(pr_url: str) -> Platform:
     else:
         logger.debug(f"Unknown platform for URL {pr_url}, defaulting to GitHub")
         return "github"
-
-
-def format_review_as_markdown(review_json: dict, owner: str, repo: str, pr_number: int) -> str:
-    """Format JSON review output as readable markdown."""
-    md = [f"# Code Review for {owner}/{repo}/pull/{pr_number}\n"]
-
-    # Overall correctness verdict
-    correctness = review_json.get("overall_correctness", "unknown")
-    confidence = review_json.get("overall_confidence_score", 0.0)
-    explanation = review_json.get("overall_explanation", "")
-
-    verdict_emoji = "✅" if "correct" in correctness else "⚠️"
-    md.append(f"## {verdict_emoji} Overall: {correctness.title()} (confidence: {confidence:.0%})\n")
-    md.append(f"{explanation}\n")
-
-    # Findings
-    findings = review_json.get("findings", [])
-    if not findings:
-        md.append("\n## No Issues Found\n")
-        md.append("The patch appears to be correct with no blocking issues identified.\n")
-        return "\n".join(md)
-
-    # Group findings by priority
-    p0_findings = [f for f in findings if f.get("priority") == 0]
-    p1_findings = [f for f in findings if f.get("priority") == 1]
-    p2_findings = [f for f in findings if f.get("priority") == 2]
-    p3_findings = [f for f in findings if f.get("priority") == 3]
-
-    # Format each priority group
-    if p0_findings:
-        md.append("\n## 🚨 P0 - Critical (Drop Everything)\n")
-        for finding in p0_findings:
-            md.append(format_finding(finding))
-
-    if p1_findings:
-        md.append("\n## 🔴 P1 - Urgent\n")
-        for finding in p1_findings:
-            md.append(format_finding(finding))
-
-    if p2_findings:
-        md.append("\n## 🟡 P2 - Normal\n")
-        for finding in p2_findings:
-            md.append(format_finding(finding))
-
-    if p3_findings:
-        md.append("\n## 🔵 P3 - Low Priority\n")
-        for finding in p3_findings:
-            md.append(format_finding(finding))
-
-    return "\n".join(md)
-
-
-def format_finding(finding: dict) -> str:
-    """Format a single finding as markdown."""
-    title = finding.get("title", "Untitled")
-    body = finding.get("body", "")
-    confidence = finding.get("confidence_score", 0.0)
-    location = finding.get("code_location", {})
-    file_path = location.get("absolute_file_path", "unknown")
-    line_range = location.get("line_range", {})
-    start = line_range.get("start", "?")
-    end = line_range.get("end", "?")
-
-    lines = []
-    lines.append(f"### {title}")
-    lines.append(f"**Location**: `{file_path}:{start}-{end}` (confidence: {confidence:.0%})\n")
-    lines.append(body)
-    lines.append("")
-    return "\n".join(lines)
 
 
 def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
@@ -260,115 +79,24 @@ def parse_pr_url(pr_url: str) -> tuple[str, str, int]:
         )
 
 
-def execute_tools_parallel(
-    tool_calls: list,
-    platform: Platform,
-    token: str | None,
-    gitlab_url: str | None = None,
-    max_workers: int = 15,
-    review_context: ReviewContext | None = None,
-) -> list[dict[str, Any]]:
-    """
-    Execute multiple tool calls in parallel using ThreadPoolExecutor.
-
-    Args:
-        tool_calls: List of tool call objects from LLM
-        platform: Platform (github or gitlab)
-        token: API authentication token
-        gitlab_url: GitLab instance URL (for self-hosted GitLab)
-        max_workers: Maximum number of parallel workers
-
-    Returns:
-        List of tool result dictionaries
-    """
-
-    def execute_single_tool(tool_call) -> dict[str, Any]:
-        """Execute a single tool call and return the result."""
-        try:
-            arguments = json.loads(tool_call.function.arguments)
-            tool_name = tool_call.function.name
-
-            if review_context:
-                default_args = {
-                    "owner": review_context.owner,
-                    "repo": review_context.repo,
-                    "pr_number": review_context.pr_number,
-                }
-                if tool_name in {"search_tests", "fetch_file_content", "list_repo_tree"}:
-                    for key, value in default_args.items():
-                        arguments.setdefault(key, value)
-                elif tool_name in {
-                    "fetch_pr_metadata",
-                    "fetch_pr_files",
-                    "fetch_file_diff",
-                    "fetch_pr_commits",
-                    "fetch_ci_status",
-                }:
-                    arguments.setdefault("owner", review_context.owner)
-                    arguments.setdefault("repo", review_context.repo)
-                    arguments.setdefault("pr_number", review_context.pr_number)
-
-            if review_context and tool_name == "fetch_file_diff":
-                file_path = arguments.get("file_path")
-                if file_path and not review_context.is_known_file(file_path):
-                    missing = review_context.missing_files()
-                    hint = ", ".join(sorted(list(missing))[:5]) if missing else "unknown"
-                    warning = {
-                        "error": (
-                            f"File {file_path} is not part of the tracked PR files. "
-                            f"Known files include: {hint}. Re-run fetch_pr_files if needed."
-                        )
-                    }
-                    return {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(warning, indent=2)}
-
-            result = execute_tool(tool_call.function.name, arguments, platform, token, gitlab_url)
-
-            if review_context and isinstance(result, dict):
-                review_context.process_tool_result(tool_call.function.name, arguments, result)
-
-            return {"role": "tool", "tool_call_id": tool_call.id, "content": json.dumps(result, indent=2)}
-        except Exception as e:
-            logger.error(f"Error executing tool {tool_call.function.name}: {str(e)}")
-            return {"role": "tool", "tool_call_id": tool_call.id, "content": f"Error executing tool: {str(e)}"}
-
-    # Use ThreadPoolExecutor for parallel execution
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(execute_single_tool, tc): tc for tc in tool_calls}
-
-        results = []
-        for future in as_completed(futures):
-            results.append(future.result())
-
-    return results
-
-
 def post_review_comment(
-    pr_url: str, review_text: str, token: str | None = None, model: str | None = None
+    pr_url: str,
+    review_text: str,
+    model: str | None = None,
 ) -> dict[str, Any]:
     """
-    Post a review comment on a GitHub PR or GitLab MR.
+    Post a review comment on a GitHub PR or GitLab MR using CLI tools.
 
     Args:
         pr_url: URL of the pull request or merge request
         review_text: The review text to post as a comment
-        token: API token for authentication
         model: LLM model used for the review (optional, for transparency)
 
     Returns:
         Dictionary with comment posting result
     """
-    # Detect platform and parse URL
     platform = detect_platform(pr_url)
     logger.info(f"Posting comment to {platform} PR/MR: {pr_url}")
-
-    # Extract GitLab URL for self-hosted instances
-    gitlab_url = None
-    if platform == "gitlab":
-        from urllib.parse import urlparse
-
-        parsed = urlparse(pr_url)
-        gitlab_url = f"{parsed.scheme}://{parsed.netloc}"
-        logger.info(f"GitLab URL: {gitlab_url}")
 
     try:
         owner, repo, pr_number = parse_pr_url(pr_url)
@@ -381,28 +109,55 @@ def post_review_comment(
     else:
         review_text_with_footer = review_text
 
-    # Call appropriate comment function based on platform
     try:
         if platform == "github":
-            result = github_tools.post_pr_comment(
-                owner=owner, repo=repo, pr_number=pr_number, comment_body=review_text_with_footer, github_token=token
+            # Use gh CLI to post comment
+            subprocess.run(
+                [
+                    "gh",
+                    "pr",
+                    "review",
+                    str(pr_number),
+                    "--repo",
+                    f"{owner}/{repo}",
+                    "--comment",
+                    "--body",
+                    review_text_with_footer,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
             )
-        elif platform == "gitlab":
-            from .tools import gitlab_tools
+            logger.info(f"Successfully posted review to GitHub PR #{pr_number}")
+            return {"success": True, "platform": "github", "pr_number": pr_number}
 
-            result = gitlab_tools.post_mr_comment(
-                owner=owner,
-                repo=repo,
-                mr_number=pr_number,
-                comment_body=review_text_with_footer,
-                github_token=token,
-                gitlab_url=gitlab_url,
+        elif platform == "gitlab":
+            # Use glab CLI to post comment
+            # Note: glab needs to be authenticated for the right GitLab instance
+            subprocess.run(
+                [
+                    "glab",
+                    "mr",
+                    "note",
+                    str(pr_number),
+                    "--message",
+                    review_text_with_footer,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                env={**os.environ},  # Pass GITLAB_HOST if set
             )
+            logger.info(f"Successfully posted review to GitLab MR !{pr_number}")
+            return {"success": True, "platform": "gitlab", "mr_number": pr_number}
+
         else:
             return {"success": False, "error": f"Unsupported platform: {platform}"}
 
-        return result
-
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Failed to post comment: {e}")
+        logger.error(f"Command output: {e.stderr if hasattr(e, 'stderr') else 'N/A'}")
+        return {"success": False, "error": str(e)}
     except Exception as e:
         logger.error(f"Error posting comment: {str(e)}")
         return {"success": False, "error": str(e)}
@@ -410,302 +165,320 @@ def post_review_comment(
 
 def review_pr(
     pr_url: str,
-    max_iterations: int = 20,
-    max_workers: int = 15,
-    token: str | None = None,
-    custom_prompt: str | None = None,
-    prompt_file: str | None = None,
+    model: str = "anthropic/claude-sonnet-4-5-20250929",
+    temperature: float | None = None,
     reasoning_effort: str | None = None,
-    **litellm_config,
+    custom_prompt: str | None = None,
+    prompt_file: Path | None = None,
+    user_llm_params: dict[str, Any] | None = None,
+    verbose: bool = False,
+    cleanup: bool = True,
+    workspace_dir: Path | None = None,
 ) -> str:
     """
-    Review a GitHub or GitLab pull request using AI.
+    Review a pull request using OpenHands agent with bash tools.
 
     Args:
-        pr_url: URL of the pull request (e.g., https://github.com/owner/repo/pull/123)
-        max_iterations: Maximum number of agentic loop iterations (default: 20)
-        max_workers: Maximum number of parallel tool calls (default: 15)
-        token: API token for authentication
-               If not provided, will use GITHUB_TOKEN or GITLAB_TOKEN environment variable
-        custom_prompt: Custom inline prompt text (overrides default prompt)
-        prompt_file: Path to file containing custom prompt (overrides default prompt)
-        reasoning_effort: Reasoning effort level for supported models ('low', 'medium', 'high')
-                         Default is 'high' if not specified
-        **litellm_config: Additional configuration for litellm.completion()
-                         (e.g., model, temperature, max_tokens, etc.)
+        pr_url: URL of the pull request or merge request
+        model: LLM model name (default: Claude Sonnet 4.5)
+        temperature: Sampling temperature (if None, auto-selected)
+        reasoning_effort: For reasoning models: "low", "medium", or "high"
+        custom_prompt: Optional custom prompt text (inline)
+        prompt_file: Optional path to custom prompt file
+        user_llm_params: Additional LLM parameters
+        verbose: Enable verbose logging
+        cleanup: Clean up workspace after review (default: True)
+        workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
 
     Returns:
-        Markdown-formatted review text
+        Review text as markdown string
+
+    Raises:
+        ValueError: If URL is invalid
+        RuntimeError: If review fails
     """
-    # Detect platform and parse URL
-    platform = detect_platform(pr_url)
-    logger.info(f"Detected platform: {platform}")
+    logger.info(f"Starting PR review for: {pr_url}")
 
-    # Extract GitLab URL for self-hosted instances
-    gitlab_url = None
-    if platform == "gitlab":
-        from urllib.parse import urlparse
-
-        parsed = urlparse(pr_url)
-        gitlab_url = f"{parsed.scheme}://{parsed.netloc}"
-        logger.info(f"GitLab URL: {gitlab_url}")
-
+    # Parse PR URL
     try:
         owner, repo, pr_number = parse_pr_url(pr_url)
-        logger.info(f"Reviewing PR: {owner}/{repo}/pull/{pr_number}")
+        platform = detect_platform(pr_url)
     except ValueError as e:
-        return f"Error: {str(e)}"
+        logger.error(f"Invalid PR URL: {e}")
+        raise
 
-    review_context = ReviewContext(owner, repo, pr_number)
+    logger.info(f"Platform: {platform}, Repo: {owner}/{repo}, PR: {pr_number}")
 
-    # Warm up file list so we can track coverage and cache responses.
-    initial_files_args = {"owner": owner, "repo": repo, "pr_number": pr_number}
+    # Create OpenHands agent
     try:
-        initial_files = execute_tool("fetch_pr_files", initial_files_args, platform, token, gitlab_url)
-        if isinstance(initial_files, dict):
-            review_context.process_tool_result("fetch_pr_files", initial_files_args, initial_files)
-    except Exception as exc:
-        logger.warning(f"Prefetching PR files failed: {exc}")
-
-    # Set default litellm config and apply user overrides first.
-    llm_params = {
-        "model": "openai/responses/gpt-5",
-        "tools": TOOLS,
-        "parallel_tool_calls": True,
-    }
-    user_overrides = dict(litellm_config)
-    llm_params.update(user_overrides)
-
-    # Normalize model names so GPT-5/o3 use the Responses API path
-    model = llm_params.get("model", "openai/responses/gpt-5")
-    if not model.startswith("openai/responses/"):
-        model_lower = model.lower()
-        if "gpt-5" in model_lower or "o3-mini" in model_lower or model_lower == "o3":
-            logger.info(f"Using Responses API for model: {model}")
-            model = f"openai/responses/{model}"
-    llm_params["model"] = model
-
-    # Add deterministic temperature only when user hasn't supplied one
-    if (
-        "temperature" not in user_overrides
-        and "gpt-5" not in model.lower()
-        and "o3" not in model.lower()
-        and "temperature" not in llm_params
-    ):
-        llm_params["temperature"] = 0.0
-
-    # Enable reasoning for supported models (respect user overrides)
-    try:
-        if reasoning_effort:
-            llm_params["reasoning_effort"] = reasoning_effort
-        elif "reasoning_effort" not in llm_params and litellm.supports_reasoning(model):
-            logger.info(f"Enabling high reasoning effort for model {model}")
-            llm_params["reasoning_effort"] = "high"
+        agent = create_hodor_agent(
+            model=model,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            verbose=verbose,
+            llm_overrides=user_llm_params,
+        )
     except Exception as e:
-        logger.debug(f"Could not check reasoning support: {e}")
+        logger.error(f"Failed to create OpenHands agent: {e}")
+        raise RuntimeError(f"Failed to create agent: {e}") from e
 
-    # Load system prompt (priority: custom_prompt > prompt_file > default)
-    if custom_prompt:
-        logger.info("Using custom inline prompt")
-        system_prompt = custom_prompt
-    elif prompt_file:
-        logger.info(f"Loading prompt from file: {prompt_file}")
+    # Setup workspace (clone repo and checkout PR branch)
+    workspace = None
+    try:
+        workspace = setup_workspace(
+            platform=platform,
+            owner=owner,
+            repo=repo,
+            pr_number=str(pr_number),
+            working_dir=workspace_dir,
+            reuse=workspace_dir is not None,  # Only reuse if user specified a workspace dir
+        )
+        logger.info(f"Workspace ready: {workspace}")
+    except Exception as e:
+        logger.error(f"Failed to setup workspace: {e}")
+        raise RuntimeError(f"Failed to setup workspace: {e}") from e
+
+    # Build prompt
+    try:
+        prompt = build_pr_review_prompt(
+            pr_url=pr_url,
+            owner=owner,
+            repo=repo,
+            pr_number=str(pr_number),
+            platform=platform,
+            custom_instructions=custom_prompt,
+            custom_prompt_file=prompt_file,
+        )
+    except Exception as e:
+        logger.error(f"Failed to build prompt: {e}")
+        if workspace and cleanup:
+            cleanup_workspace(workspace)
+        raise RuntimeError(f"Failed to build prompt: {e}") from e
+
+    # Create conversation and run agent
+    # NOTE: Temporary workaround for NixOS compatibility (where bash is not at /bin/bash)
+    # TODO: Remove this once OpenHands SDK adds bash_path parameter to SubprocessTerminal
+    #       See https://github.com/OpenHands/agent-sdk/issues/TBD
+    import shutil
+
+    bash_path = shutil.which("bash") or "/bin/bash"
+    if bash_path != "/bin/bash":
+        logger.debug(f"Patching SubprocessTerminal for NixOS (bash at {bash_path})")
         try:
-            with open(prompt_file, "r", encoding="utf-8") as f:
-                system_prompt = f.read()
-        except Exception as e:
-            logger.error(f"Failed to load prompt file: {e}")
-            return f"Error loading prompt file: {e}"
-    else:
-        # Default system prompt
-        system_prompt = f"""You are an expert code reviewer analyzing PR {owner}/{repo}/pull/{pr_number}. Your goal is to find legitimate bugs and issues that would cause problems in production.
+            from openhands.tools.terminal.terminal import subprocess_terminal
 
-# Available Tools
-- `fetch_pr_metadata`: Get PR title, description, author
-- `fetch_pr_files`: List all changed files
-- `fetch_file_diff`: Get unified diff for a file (USE THIS TO READ ACTUAL CODE)
-- `fetch_file_content`: Fetch full file contents from the PR head or a provided ref
-- `list_repo_tree`: Inspect repository layout (optionally scoped to a directory)
-- `fetch_pr_commits`: Get commit history
-- `fetch_ci_status`: Check test status
-- `search_tests`: Pass `owner`, `repo`, `pr_number`, and `file_path` to locate related tests
+            original_initialize = subprocess_terminal.SubprocessTerminal.initialize
 
-# Review Process
-1. Call `fetch_pr_metadata` and `fetch_pr_files` in parallel
-2. Call `fetch_file_diff` for EVERY code file to see actual changes. Use up to {max_workers} parallel calls.
-3. **Read every line of code carefully**. Look for subtle bugs, edge cases, and logic errors.
-4. Think critically: What could go wrong? What inputs would break this? What concurrency issues exist?
+            def patched_initialize(self):
+                if self._initialized:
+                    return
+                import fcntl
+                import pty
+                import threading
+                import uuid
 
-# What Qualifies as a Bug
-A bug must meet ALL these criteria:
-   - Meaningfully impacts accuracy, performance, security, or maintainability
-   - Discrete and actionable (not general codebase issues)
-   - Introduced in this commit (not pre-existing)
-   - Author would likely fix if made aware
-   - Does not rely on unstated assumptions
-   - Not just an intentional change by the author
+                env = os.environ.copy()
+                env["PS1"] = self.PS1
+                env["PS2"] = ""
+                env["TERM"] = "xterm-256color"
+                bash_cmd = [bash_path, "-i"]  # Use discovered bash instead of /bin/bash
+                master_fd, slave_fd = pty.openpty()
 
-# Bug Categories - Be Thorough
-**Critical (P0/P1)**:
-- Race conditions, null/nil derefs, off-by-one errors
-- Resource leaks (unclosed files, connections, goroutines, db transactions)
-- SQL injection, XSS, command injection, path traversal
-- Auth/authz bypasses, session fixation, data exposure
-- Incorrect error handling (ignored errors, wrong error types, panic potential)
-- Logic errors that cause incorrect behavior
-
-**Important (P2)**:
-- N+1 queries, missing database indexes
-- Inefficient algorithms (O(n²) where O(n) possible)
-- Missing input validation, missing bounds checks
-- Deadlock potential, blocking operations in async code
-- Memory leaks, unbounded growth
-- Incorrect assumptions about data format/structure
-
-**Low (P3)**:
-- Code smells impacting maintainability
-- Inconsistent error messages
-- Magic numbers without explanation
-- Overly complex logic that should be simplified
-
-# Priority Levels
-- **P0**: Blocks release/operations. Universal issues not dependent on assumptions.
-- **P1**: Urgent. Should be addressed in next cycle.
-- **P2**: Normal. To be fixed eventually.
-- **P3**: Low. Nice to have.
-
-# Critical Instructions
-- **DO NOT skip files**. Review every changed code file thoroughly.
-- **Look for edge cases**: empty inputs, null/nil values, boundary conditions, concurrent access
-- **Think about error paths**: What happens when things fail? Are errors handled properly?
-- **Consider security**: Could user input cause problems? Are credentials exposed?
-- **Be skeptical**: Don't assume the code is correct. Look for issues.
-
-# Output Format
-Return ONLY valid JSON (no markdown fences, no extra prose):
-
-```
-{{
-  "findings": [
-    {{
-      "title": "[P0] Brief imperative description (≤80 chars)",
-      "body": "One paragraph explaining WHY this is a problem. Reference file:line. Be matter-of-fact, not accusatory. No flattery. Max 3-line code snippets in markdown.",
-      "confidence_score": 0.85,
-      "priority": 0,
-      "code_location": {{
-        "absolute_file_path": "path/to/file.ext",
-        "line_range": {{"start": 45, "end": 47}}
-      }}
-    }}
-  ],
-  "overall_correctness": "patch is correct",
-  "overall_explanation": "1-3 sentences justifying the verdict. Ignore non-blocking issues like style/typos.",
-  "overall_confidence_score": 0.9
-}}
-```
-
-# Guidelines
-- Output ALL qualifying findings. If nothing qualifies, return empty findings array.
-- Comments must be brief (1 paragraph max), clear, and immediately graspable.
-- Communicate severity accurately. State specific scenarios/inputs that trigger the bug.
-- Line ranges should be 5-10 lines max, pinpointing the problem.
-- Assume competent developer. Don't invent problems. If code is good, say so.
-- No excessive flattery, no "Great job", no "Thanks for".
-
-Begin."""
-
-    # Initialize conversation
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"Review pull request {pr_url}"},
-    ]
-
-    # Agent loop
-    for iteration in range(max_iterations):
-        logger.info(f"Iteration {iteration + 1}/{max_iterations}")
-
-        try:
-            # Call LLM
-            response = completion(messages=messages, **llm_params)
-            message = response.choices[0].message
-
-            # Build assistant message
-            assistant_msg = {"role": "assistant", "content": []}
-
-            # Handle content
-            if hasattr(message, "content") and message.content:
-                if isinstance(message.content, str):
-                    assistant_msg["content"].append({"type": "text", "text": message.content})
-                elif isinstance(message.content, list):
-                    assistant_msg["content"].extend(message.content)
-
-            # Handle tool calls
-            if hasattr(message, "tool_calls") and message.tool_calls:
-                assistant_msg["tool_calls"] = message.tool_calls
-                messages.append(assistant_msg)
-
-                logger.info(f"Executing {len(message.tool_calls)} tool calls in parallel...")
-
-                # Execute tools in parallel
-                tool_results = execute_tools_parallel(
-                    message.tool_calls, platform, token, gitlab_url, max_workers, review_context
-                )
-
-                # Add tool results to messages
-                messages.extend(tool_results)
-
-            else:
-                # No tool calls - final answer
-                messages.append(assistant_msg)
-
-                # Extract text response
-                response_text = ""
-                if isinstance(message.content, str):
-                    response_text = message.content
-                elif isinstance(message.content, list):
-                    text_parts = [
-                        block.get("text", "")
-                        for block in message.content
-                        if isinstance(block, dict) and block.get("type") == "text"
-                    ]
-                    response_text = "\n".join(text_parts)
-
-                if not response_text:
-                    return "Review completed (no content)"
-
-                if review_context and review_context.files_to_cover:
-                    missing = review_context.missing_files()
-                    if missing:
-                        sample_missing = ", ".join(sorted(list(missing))[:5])
-                        if len(missing) > 5:
-                            sample_missing += ", ..."
-                        reminder_text = (
-                            "You must inspect the diff for every changed code file before finishing. "
-                            f"Still missing {len(missing)} file(s): {sample_missing}. "
-                            "Call `fetch_file_diff` for each remaining file."
-                        )
-                        messages.append({"role": "user", "content": reminder_text})
-                        continue
-
-                # Try to parse as JSON and format as markdown
+                logger.debug("Initializing PTY with: %s", " ".join(bash_cmd))
                 try:
-                    # Remove markdown fences if present
-                    clean_text = response_text.strip()
-                    if clean_text.startswith("```json"):
-                        clean_text = clean_text[7:]
-                    if clean_text.startswith("```"):
-                        clean_text = clean_text[3:]
-                    if clean_text.endswith("```"):
-                        clean_text = clean_text[:-3]
+                    self.process = subprocess.Popen(
+                        bash_cmd,
+                        stdin=slave_fd,
+                        stdout=slave_fd,
+                        stderr=slave_fd,
+                        cwd=self.work_dir,
+                        env=env,
+                        text=False,
+                        bufsize=0,
+                        preexec_fn=os.setsid,  # New process group
+                        close_fds=True,
+                    )
+                finally:
+                    try:
+                        os.close(slave_fd)
+                    except Exception:
+                        pass
 
-                    review_json = json.loads(clean_text.strip())
-                    return format_review_as_markdown(review_json, owner, repo, pr_number)
-                except json.JSONDecodeError:
-                    logger.warning("Failed to parse JSON response, returning raw text")
-                    return response_text
+                self._pty_master_fd = master_fd
 
+                # Set master FD non-blocking
+                flags = fcntl.fcntl(self._pty_master_fd, fcntl.F_GETFL)
+                fcntl.fcntl(self._pty_master_fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+
+                # Start output reader thread
+                self.reader_thread = threading.Thread(
+                    target=self._read_output_continuously_pty, daemon=True
+                )
+                self.reader_thread.start()
+                self._initialized = True
+
+                # Deterministic readiness check with sentinel
+                sentinel = f"__OH_READY_{uuid.uuid4().hex}__"
+                from openhands.tools.terminal.terminal.subprocess_terminal import ENTER
+
+                init_cmd = (
+                    f"export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
+                    f'export PS2=""; '
+                    f'printf "{sentinel}"'
+                ).encode("utf-8", "ignore")
+
+                self._write_pty(init_cmd + ENTER)
+                if not self._wait_for_output(sentinel, timeout=8.0):
+                    raise RuntimeError("PTY did not become ready within timeout")
+
+            subprocess_terminal.SubprocessTerminal.initialize = patched_initialize
+            logger.info(f"Applied NixOS patch (bash: {bash_path})")
         except Exception as e:
-            logger.error(f"Error in iteration {iteration + 1}: {str(e)}")
-            return f"Error during review: {str(e)}"
+            logger.warning(f"Failed to patch SubprocessTerminal: {e}")
 
-    return f"Maximum iterations ({max_iterations}) reached. Review incomplete."
+    #  Event callback for monitoring agent progress
+    def on_event(event: Any) -> None:
+        """Callback for streaming agent events in verbose mode."""
+        if not verbose:
+            return
+
+        event_type = type(event).__name__
+
+        # Log LLM API calls (for detailed token/cost tracking)
+        from openhands.events.event import LLMConvertibleEvent
+
+        if isinstance(event, LLMConvertibleEvent):
+            # This captures raw LLM messages for detailed analysis
+            # Useful for debugging prompt engineering or cost optimization
+            logger.debug(f"🤖 LLM Event: {event_type}")
+
+        # Log agent actions
+        if hasattr(event, "action") and event.action:
+            action_type = type(event.action).__name__
+            if action_type == "ExecuteBashAction":
+                logger.info(f"🔧 Executing: {event.action.command[:100]}")
+            elif action_type == "FileEditAction":
+                logger.info(f"✏️  Editing file: {getattr(event.action, 'file_path', 'unknown')}")
+            elif action_type == "MessageAction":
+                logger.info(f"💬 Agent thinking...")
+
+        # Log observations (results)
+        if hasattr(event, "observation") and event.observation:
+            obs_type = type(event.observation).__name__
+            if obs_type == "ExecuteBashObservation" and hasattr(event.observation, "exit_code"):
+                exit_code = event.observation.exit_code
+                status = "✓" if exit_code == 0 else "✗"
+                logger.info(f"   {status} Exit code: {exit_code}")
+
+        # Log errors
+        if hasattr(event, "error") and event.error:
+            logger.warning(f"⚠️  Error: {event.error}")
+
+    import time
+
+    start_time = time.time()
+
+    try:
+        logger.info("Creating OpenHands conversation...")
+        conversation = Conversation(agent=agent, workspace=str(workspace))
+
+        logger.info("Sending prompt to agent...")
+        conversation.send_message(prompt)
+
+        logger.info("Running agent review (this may take several minutes)...")
+
+        # Run with event streaming if verbose
+        if verbose:
+            # Register event callback for real-time monitoring
+            conversation._state.on_event = on_event
+
+        conversation.run()
+
+        logger.info("Extracting review from agent response...")
+        review_content = get_agent_final_response(conversation.state.events)
+
+        if not review_content:
+            raise RuntimeError("Agent did not produce any review content")
+
+        # Calculate review time
+        review_time_seconds = time.time() - start_time
+        review_time_str = f"{int(review_time_seconds // 60)}m {int(review_time_seconds % 60)}s"
+
+        logger.info(f"Review complete ({len(review_content)} chars)")
+
+        # Always print metrics (not just in verbose mode)
+        if hasattr(conversation, "conversation_stats"):
+            stats = conversation.conversation_stats
+            combined = stats.get_combined_metrics()
+
+            if combined:
+                # Token usage breakdown
+                usage = combined.get("accumulated_token_usage", {})
+                prompt_tokens = usage.get("prompt_tokens", 0)
+                completion_tokens = usage.get("completion_tokens", 0)
+                cache_read_tokens = usage.get("cache_read_input_tokens", 0)
+                cache_write_tokens = usage.get("cache_creation_input_tokens", 0)
+                reasoning_tokens = usage.get("reasoning_tokens", 0)
+                total_tokens = usage.get("total_tokens", 0)
+
+                # Cost estimate
+                cost = combined.get("accumulated_cost", 0)
+
+                # Calculate cache hit rate
+                cache_hit_rate = 0
+                if cache_read_tokens > 0 and (prompt_tokens + cache_read_tokens) > 0:
+                    cache_hit_rate = (cache_read_tokens / (prompt_tokens + cache_read_tokens)) * 100
+
+                # Print metrics (always, not just verbose)
+                print("\n" + "=" * 60)
+                print("📊 Token Usage Metrics:")
+                print(f"  • Input tokens:       {prompt_tokens:,}")
+                print(f"  • Output tokens:      {completion_tokens:,}")
+                if cache_read_tokens > 0:
+                    print(f"  • Cache hits:         {cache_read_tokens:,} ({cache_hit_rate:.1f}%)")
+                if reasoning_tokens > 0:
+                    print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
+                print(f"  • Total tokens:       {total_tokens:,}")
+                print(f"\n💰 Cost Estimate:      ${cost:.4f}")
+                print(f"⏱️  Review Time:        {review_time_str}")
+                print("=" * 60 + "\n")
+
+                # Verbose mode: additional details
+                if verbose:
+                    if cache_write_tokens > 0:
+                        logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
+                    latencies = combined.get("response_latencies", [])
+                    if latencies:
+                        avg_latency = sum(latencies) / len(latencies)
+                        logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
+
+        return review_content
+
+    except Exception as e:
+        logger.error(f"Review failed: {e}")
+        raise RuntimeError(f"Review failed: {e}") from e
+
+    finally:
+        # Reset terminal to prevent corruption from PTY
+        # The subprocess terminal can leave escape sequences that corrupt the parent shell
+        try:
+            import sys
+            import subprocess as sp
+
+            # Reset terminal attributes if we're in a TTY (without clearing screen)
+            if sys.stdin.isatty():
+                # Use stty sane to reset terminal to sensible defaults
+                sp.run(
+                    ["stty", "sane"],
+                    stdin=sys.stdin,
+                    stdout=sp.DEVNULL,
+                    stderr=sp.DEVNULL,
+                    check=False,
+                )
+        except Exception:
+            pass  # Silently ignore if terminal reset fails
+
+        # Clean up workspace
+        if workspace and cleanup:
+            logger.info("Cleaning up workspace...")
+            cleanup_workspace(workspace)

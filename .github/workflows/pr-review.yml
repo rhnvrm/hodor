@@ -1,0 +1,139 @@
+# Hodor AI Code Review Workflow
+#
+# This workflow automatically reviews pull requests using Hodor with enhanced tooling.
+# Hodor uses grep, glob, and planning_file_editor for efficient code analysis.
+#
+# Trigger options:
+#   1. Add the label "hodor-review" to a PR
+#   2. Request "hodor-agent" as a reviewer
+#   3. Automatically on every PR (uncomment the trigger below)
+
+name: AI Code Review by Hodor
+
+on:
+  pull_request:
+    types: [labeled, review_requested]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  ai-review:
+    # Only run if "hodor-review" label is added OR hodor-agent is requested as reviewer
+    if: |
+      github.event.label.name == 'hodor-review' ||
+      github.event.requested_reviewer.login == 'hodor-agent'
+    runs-on: ubuntu-latest
+
+    env:
+      # Configuration
+      LLM_MODEL: anthropic/claude-sonnet-4-5-20250929
+      # Optional: Set a custom base URL for LLM API
+      # LLM_BASE_URL: https://your-custom-api.example.com
+
+      # PR context (automatically provided by GitHub)
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_BODY: ${{ github.event.pull_request.body }}
+      PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+      PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
+      REPO_NAME: ${{ github.repository }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history to get diffs
+          fetch-depth: 0
+          # Check out the PR head branch
+          ref: ${{ github.event.pull_request.head.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install GitHub CLI
+        run: |
+          # GitHub CLI should already be available in ubuntu-latest
+          gh --version
+
+      - name: Check required secrets
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          # Check if at least one LLM API key is set
+          if [ -z "$LLM_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$OPENAI_API_KEY" ]; then
+            echo "Error: No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY"
+            exit 1
+          fi
+
+          echo "Configuration:"
+          echo "  PR: #$PR_NUMBER - $PR_TITLE"
+          echo "  Repository: $REPO_NAME"
+          echo "  LLM Model: $LLM_MODEL"
+          if [ -n "$LLM_BASE_URL" ]; then
+            echo "  LLM Base URL: $LLM_BASE_URL"
+          fi
+
+      - name: Install Hodor
+        run: |
+          # Clone Hodor repository
+          git clone https://github.com/mr-karan/hodor /tmp/hodor
+          cd /tmp/hodor
+
+          # Install dependencies
+          uv sync
+
+          echo "Hodor installed successfully"
+
+      - name: Run Hodor review
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd /tmp/hodor
+
+          # Build PR URL
+          PR_URL="https://github.com/${REPO_NAME}/pull/${PR_NUMBER}"
+
+          echo "Reviewing PR: $PR_URL"
+
+          # Run Hodor with --post to automatically comment on the PR
+          uv run hodor "$PR_URL" \
+            --model "$LLM_MODEL" \
+            --post \
+            --verbose
+
+      - name: Upload logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hodor-review-logs
+          path: |
+            /tmp/hodor/*.log
+            /tmp/hodor/output/
+          retention-days: 7
+
+      - name: Comment on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '⚠️ Hodor AI review failed. Check the [workflow logs](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) for details.'
+            })

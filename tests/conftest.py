@@ -1,28 +1,80 @@
+"""Test fixtures and mocks for Hodor tests."""
+
 import sys
 import types
+from unittest.mock import MagicMock
 
 
-def _install_litellm_stub():
-    """Provide a lightweight stand-in so importing hodor.agent doesn't need native deps."""
-    if "litellm" in sys.modules:
+def _install_openhands_stub():
+    """Provide lightweight stubs for OpenHands SDK modules so tests don't need real deps."""
+
+    if "openhands" in sys.modules:
         return
 
-    stub = types.ModuleType("litellm")
+    # Create mock modules
+    openhands_module = types.ModuleType("openhands")
+    sdk_module = types.ModuleType("openhands.sdk")
+    conversation_module = types.ModuleType("openhands.sdk.conversation")
+    tools_module = types.ModuleType("openhands.tools")
+    tools_preset_module = types.ModuleType("openhands.tools.preset")
+    tools_default_module = types.ModuleType("openhands.tools.preset.default")
 
-    def completion(*args, **kwargs):
-        raise RuntimeError("litellm completion stub should not be invoked in unit tests")
+    # Mock LLM class
+    class MockLLM:
+        def __init__(self, **kwargs):
+            self.config = kwargs
 
-    stub.completion = completion
+    # Mock Agent class
+    class MockAgent:
+        def __init__(self, llm, cli_mode=True):
+            self.llm = llm
+            self.cli_mode = cli_mode
 
-    def supports_reasoning(model_name: str) -> bool:
-        return False
+    # Mock Conversation class
+    class MockConversation:
+        def __init__(self, agent, workspace):
+            self.agent = agent
+            self.workspace = workspace
+            self.state = MagicMock()
+            self.state.events = []
 
-    stub.supports_reasoning = supports_reasoning
-    stub.drop_params = False
+        def send_message(self, message):
+            pass
 
-    sys.modules["litellm"] = stub
-    # Support "from litellm import completion"
-    sys.modules["litellm"].completion = completion
+        def run(self):
+            pass
+
+    # Mock get_agent_final_response function
+    def mock_get_agent_final_response(events):
+        return "### Mock Review\n\nThis is a test review output from the mocked OpenHands agent."
+
+    # Mock get_default_agent function
+    def mock_get_default_agent(llm, cli_mode=True):
+        return MockAgent(llm=llm, cli_mode=cli_mode)
+
+    # Mock get_logger function
+    def mock_get_logger(name):
+        import logging
+
+        return logging.getLogger(name)
+
+    # Assign mocks to modules
+    sdk_module.LLM = MockLLM
+    sdk_module.Conversation = MockConversation
+    sdk_module.get_logger = mock_get_logger
+
+    conversation_module.get_agent_final_response = mock_get_agent_final_response
+
+    tools_default_module.get_default_agent = mock_get_default_agent
+
+    # Register modules
+    sys.modules["openhands"] = openhands_module
+    sys.modules["openhands.sdk"] = sdk_module
+    sys.modules["openhands.sdk.conversation"] = conversation_module
+    sys.modules["openhands.tools"] = tools_module
+    sys.modules["openhands.tools.preset"] = tools_preset_module
+    sys.modules["openhands.tools.preset.default"] = tools_default_module
 
 
-_install_litellm_stub()
+# Install stubs before any hodor imports
+_install_openhands_stub()
