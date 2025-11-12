@@ -5,6 +5,7 @@
 - `workspace.py` handles repo cloning, CI detection, and PR branch checkout for GitHub and GitLab
 - `llm/openhands_client.py` wraps the OpenHands SDK with proper model configuration and LLM provider setup
 - `hodor/prompts/pr_review_prompt.py` contains the PR review prompt (get diff → review only changed files → analyze)
+- `skills.py` implements skill discovery from `.cursorrules`, `agents.md`, and `.hodor/skills/` for repository-specific guidelines
 - `tools/` hosts integration helpers (GitHub/GitLab CLI wrappers)
 - Keep credentials and local overrides out of git by editing `.env` (mirrors `.env.example`)
 - New tests and fixtures should land in `tests/`, which pytest auto-discovers via `test_*.py`

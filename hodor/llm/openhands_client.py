@@ -94,6 +94,7 @@ def create_hodor_agent(
     base_url: str | None = None,
     verbose: bool = False,
     llm_overrides: dict[str, Any] | None = None,
+    skills: list[dict] | None = None,
 ) -> Any:
     """Create an OpenHands agent configured for Hodor PR reviews.
 
@@ -105,6 +106,7 @@ def create_hodor_agent(
         base_url: Custom LLM base URL (optional)
         verbose: Enable verbose logging
         llm_overrides: Additional LLM parameters to pass through
+        skills: Repository skills to inject into agent context (from discover_skills())
 
     Returns:
         Configured OpenHands Agent instance
@@ -169,7 +171,9 @@ def create_hodor_agent(
     # Use subprocess terminal instead of tmux to avoid "command too long" errors
     # that occur when environment has large variables (DIRENV_DIFF, LS_COLORS, etc.)
     from openhands.sdk.agent.agent import Agent
+    from openhands.sdk.context.agent_context import AgentContext
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
+    from openhands.sdk.context.microagents.repo_microagent import RepoMicroagent
     from openhands.sdk.tool.spec import Tool
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.glob import GlobTool
@@ -197,11 +201,30 @@ def create_hodor_agent(
         llm=llm.model_copy(update={"usage_id": "condenser"}), max_size=80, keep_first=4
     )
 
+    # Build agent context with repository skills if provided
+    context = None
+    if skills:
+        microagents = []
+        for skill in skills:
+            microagents.append(
+                RepoMicroagent(
+                    name=skill["name"],
+                    content=skill["content"],
+                    trigger=skill.get("trigger"),  # Always None for repo skills (always active)
+                )
+            )
+        context = AgentContext(microagents=microagents)
+
+        if verbose:
+            skill_names = ", ".join([s["name"] for s in skills])
+            logger.info(f"Injecting {len(microagents)} skill(s) into agent context: {skill_names}")
+
     agent = Agent(
         llm=llm,
         tools=tools,
         system_prompt_kwargs={"cli_mode": True},  # Always use CLI mode for PR reviews
         condenser=condenser,
+        context=context,  # Inject repository skills
     )
 
     return agent

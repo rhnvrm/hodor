@@ -37,17 +37,17 @@ Create a `.cursorrules` file in your repository root:
 
 ## Skills System Overview
 
-Hodor automatically loads repository-specific review guidelines through the OpenHands skills system. Skills are injected into the agent's context when reviewing PRs.
+Hodor automatically loads repository-specific review guidelines through the OpenHands SDK's skills system. Skills are discovered from your repository and injected into the agent's context when reviewing PRs.
 
 ### Supported Skill Locations
 
-Hodor looks for skills in these locations (in priority order):
+Hodor searches for skills in these locations (in priority order):
 
-1. **`.cursorrules`** - Simple, single-file project guidelines
+1. **`.cursorrules`** - Simple, single-file project guidelines (most common)
 2. **`agents.md` or `agent.md`** - Alternative single-file location
 3. **`.hodor/skills/*.md`** - Modular skills (multiple files organized by topic)
 
-All files are loaded automatically when the workspace is set up. No configuration needed.
+All discovered files are loaded automatically when the workspace is set up. No configuration needed—just create the files in your repository root.
 
 ### 1. Simple Skills (Single File)
 
@@ -105,7 +105,9 @@ Security-specific checks for authentication, authorization, data validation...
 
 **Use Case**: Organize guidelines by domain (security, performance, database, testing, etc.)
 
-### 3. Advanced: Triggered Skills (Not Yet Supported)
+### 3. Advanced: Triggered Skills
+
+*(Feature available in OpenHands SDK but not yet exposed in Hodor)*
 
 Future enhancement - skills that activate based on PR keywords:
 
@@ -246,13 +248,23 @@ When reviewing security-related code:
 
 ## Advanced: MCP Integration
 
-*(Not yet implemented)* Future enhancement - integrate MCP (Model Context Protocol) tools for richer context:
+*(OpenHands SDK feature not yet exposed in Hodor)*
 
-**.hodor/skills/github-integration.md**:
+The OpenHands SDK supports MCP (Model Context Protocol) tool integration through repository skills. This feature could be enabled in future Hodor versions to fetch additional context during reviews:
+
+**.hodor/skills/github-integration.md** (example for future):
 ```markdown
-# GitHub Integration Review (Future)
+---
+mcp_tools:
+  mcpServers:
+    github:
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-github"]
+---
 
-Could fetch additional context via MCP:
+# GitHub Integration Review
+
+This skill would fetch additional context via MCP:
 - Previous PRs by the same author
 - Related issues and discussions
 - CI/CD check results
@@ -264,14 +276,19 @@ Could fetch additional context via MCP:
 When Hodor starts a review:
 
 1. **Workspace Setup**: Clone repo and checkout PR branch
-2. **Skill Discovery** (via OpenHands SDK): Scan for:
+2. **Skill Discovery**: `discover_skills()` scans workspace for:
    - `.cursorrules` (simple, single-file guidelines)
    - `agents.md` or `agent.md` (alternative single-file location)
    - `.hodor/skills/*.md` (modular, multi-file guidelines)
-3. **Context Building**: All discovered skills are combined into the agent's system prompt
-4. **Review**: Agent uses combined guidelines to review the PR
+3. **Context Building**: Discovered skills are converted to OpenHands `RepoMicroagent` objects
+4. **Agent Creation**: `AgentContext` with microagents is injected into the OpenHands Agent
+5. **Review**: Agent uses combined guidelines as part of its system prompt
 
-**Note**: All skills are loaded on every review. Keyword-based triggering is not yet implemented.
+**Implementation Details**:
+- Skills are loaded from the repository being reviewed (not from Hodor's own repo)
+- All skills are treated as "repository skills" (always active)
+- Keyword-based triggering is available in OpenHands SDK but not yet exposed in Hodor
+- Verbose mode (`--verbose`) logs which skills were discovered and loaded
 
 ## Best Practices
 

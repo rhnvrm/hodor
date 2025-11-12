@@ -10,9 +10,11 @@ from urllib.parse import urlparse
 from dotenv import load_dotenv
 from openhands.sdk import Conversation
 from openhands.sdk.conversation import get_agent_final_response
+from openhands.sdk.workspace import LocalWorkspace
 
 from .llm import create_hodor_agent, get_api_key
 from .prompts.pr_review_prompt import build_pr_review_prompt
+from .skills import discover_skills
 from .workspace import cleanup_workspace, setup_workspace
 
 # Load environment variables
@@ -211,19 +213,6 @@ def review_pr(
 
     logger.info(f"Platform: {platform}, Repo: {owner}/{repo}, PR: {pr_number}, Host: {host}")
 
-    # Create OpenHands agent
-    try:
-        agent = create_hodor_agent(
-            model=model,
-            temperature=temperature,
-            reasoning_effort=reasoning_effort,
-            verbose=verbose,
-            llm_overrides=user_llm_params,
-        )
-    except Exception as e:
-        logger.error(f"Failed to create OpenHands agent: {e}")
-        raise RuntimeError(f"Failed to create agent: {e}") from e
-
     # Setup workspace (clone repo and checkout PR branch)
     workspace = None
     try:
@@ -240,6 +229,33 @@ def review_pr(
     except Exception as e:
         logger.error(f"Failed to setup workspace: {e}")
         raise RuntimeError(f"Failed to setup workspace: {e}") from e
+
+    # Discover repository skills (from .cursorrules, agents.md, .hodor/skills/)
+    skills = []
+    try:
+        skills = discover_skills(workspace)
+        if skills:
+            logger.info(f"Discovered {len(skills)} repository skill(s)")
+        else:
+            logger.debug("No repository skills found")
+    except Exception as e:
+        logger.warning(f"Failed to discover skills (continuing without skills): {e}")
+
+    # Create OpenHands agent with repository skills
+    try:
+        agent = create_hodor_agent(
+            model=model,
+            temperature=temperature,
+            reasoning_effort=reasoning_effort,
+            verbose=verbose,
+            llm_overrides=user_llm_params,
+            skills=skills,
+        )
+    except Exception as e:
+        logger.error(f"Failed to create OpenHands agent: {e}")
+        if workspace and cleanup:
+            cleanup_workspace(workspace)
+        raise RuntimeError(f"Failed to create agent: {e}") from e
 
     # Build prompt
     try:
@@ -302,7 +318,9 @@ def review_pr(
 
     try:
         logger.info("Creating OpenHands conversation...")
-        conversation = Conversation(agent=agent, workspace=str(workspace))
+        # Use LocalWorkspace for better integration with OpenHands SDK
+        workspace_obj = LocalWorkspace(path=str(workspace))
+        conversation = Conversation(agent=agent, workspace=workspace_obj)
 
         logger.info("Sending prompt to agent...")
         conversation.send_message(prompt)

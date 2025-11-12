@@ -154,7 +154,7 @@ mkdir -p .hodor/skills
 hodor <PR_URL> --workspace . --verbose
 ```
 
-The agent will automatically load skills from `.hodor/skills/` and apply them during review.
+The agent will automatically discover and load skills from `.hodor/skills/` when reviewing the PR. Use `--verbose` to see which skills were loaded.
 
 ### Organizing Skills by Topic
 
