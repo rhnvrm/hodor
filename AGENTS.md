@@ -4,8 +4,8 @@
 - The runtime package lives in `hodor/`: `cli.py` exposes the Click entrypoint, `agent.py` manages the review loop using OpenHands SDK
 - `workspace.py` handles repo cloning, CI detection, and PR branch checkout for GitHub and GitLab
 - `llm/openhands_client.py` wraps the OpenHands SDK with proper model configuration and LLM provider setup
-- `hodor/prompts/pr_review_prompt.py` contains the 3-step PR review process (get diff → review only changed files → analyze)
-- `tools/` and `utils/` host integration helpers (GitHub/GitLab CLIs) and shared logic (file classification)
+- `hodor/prompts/pr_review_prompt.py` contains the PR review prompt (get diff → review only changed files → analyze)
+- `tools/` hosts integration helpers (GitHub/GitLab CLI wrappers)
 - Keep credentials and local overrides out of git by editing `.env` (mirrors `.env.example`)
 - New tests and fixtures should land in `tests/`, which pytest auto-discovers via `test_*.py`
 
@@ -47,7 +47,7 @@ just review URL  # shortcut for `uv run hodor URL [flags]`
 Docker workflows: `docker-build` for local testing, `docker-push REGISTRY` to publish (amd64 only).
 
 ## Coding Style & Naming Conventions
-Target Python 3.13, Black formatting (120-char lines, 4-space indents), and Ruff linting with the same width. Prefer descriptive module-level names (`github_tools.py`, `file_classifier.py`) and snake_case for functions, UPPER_SNAKE_CASE for constants, and CapWords for classes. Run `just fmt` before committing to avoid noisy diffs.
+Target Python 3.13, Black formatting (120-char lines, 4-space indents), and Ruff linting with the same width. Prefer descriptive module-level names (`github_tools.py`, `workspace.py`) and snake_case for functions, UPPER_SNAKE_CASE for constants, and CapWords for classes. Run `just fmt` before committing to avoid noisy diffs.
 
 ## Testing Guidelines
 Pytest is configured via `pyproject.toml` with `tests` as the root and files/functions named `test_*`. Aim to keep coverage near the default `pytest --cov=hodor` output (term-missing must stay clean). Reach for `just test-watch` when iterating locally, and regenerate the HTML report with `just test-cov` when validating larger refactors.
@@ -56,7 +56,7 @@ Pytest is configured via `pyproject.toml` with `tests` as the root and files/fun
 Follow the existing history: short, imperative subjects (`Add Hodor - …`) under 72 chars plus optional body. Squash unrelated changes, reference issues (`Fixes #123`) when applicable, and attach before/after screenshots for CLI output tweaks. Every PR description should list the motivation, testing proof (commands run), and any follow-up TODOs so reviewers can reproduce your setup.
 
 ## Security & Configuration Tips
-Store API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, `GITLAB_TOKEN`) in `.env` and pass them through uv or Docker (`just docker-run` respects exported variables with `${VAR:-}` syntax for optional vars). Never commit credentials, lockfiles containing secrets, or sanitized logs—scrub with `tools/file_classifier.py` if unsure.
+Store API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, `GITLAB_TOKEN`) in `.env` and pass them through uv or Docker (`just docker-run` respects exported variables with `${VAR:-}` syntax for optional vars). Never commit credentials, lockfiles containing secrets, or sanitized logs.
 
 ### CI/CD Environment Variables
 When running in GitLab CI or GitHub Actions, Hodor automatically detects:
