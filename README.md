@@ -1,54 +1,55 @@
-# Hodor 🚪
+<a href="https://zerodha.tech"><img src="https://zerodha.tech/static/images/github-badge.svg" align="right" /></a>
 
-> **Truly agentic PR reviews** powered by the [OpenHands Agent SDK](https://docs.openhands.dev/sdk/arch/overview)
-> Not just LLM prompting—a full reasoning-action loop with autonomous tool orchestration
+# Hodor
 
-**Cross-platform (GitHub + GitLab)** • **Sandboxed workspaces** • **Multi-step planning** • **Context-aware analysis** • **2-3 minute reviews**
+> An agentic code reviewer for GitHub and GitLab pull requests, powered by the [OpenHands Agent SDK](https://docs.openhands.dev/sdk/arch/overview).
+
+Hodor performs automated, in-depth code reviews by running as a stateful agent with a reasoning-action loop. It can analyze code, run commands, and provide context-aware feedback.
+
+**Features:**
+- **Cross-platform**: Works with GitHub and GitLab (cloud and self-hosted).
+- **Sandboxed**: Each review runs in an isolated, temporary workspace.
+- **Context-aware**: Uses repository-specific "Skills" to enforce conventions.
+- **CI-Native**: Optimizes execution when running in GitHub Actions or GitLab CI.
+- **Observability**: Provides detailed logs, token usage, and cost estimates.
 
 ---
 
-## What Makes Hodor Agentic?
+## How It Works
 
-Unlike simple LLM-prompting tools, Hodor runs as a **stateful agent** with a [reasoning-action loop](https://docs.openhands.dev/sdk/arch/agent):
+Unlike simple LLM-prompting tools, Hodor uses the OpenHands SDK to operate as an agent that can reason and act.
 
-### 🧠 Autonomous Decision Making
-- **Planning Phase**: Agent analyzes the PR and creates an execution plan
-- **Tool Selection**: Chooses appropriate tools (grep, file read, git diff) based on context
-- **Iterative Refinement**: Observes results, adapts strategy, retries on failures
-- **No Hardcoded Workflows**: Agent decides what to inspect and in what order
+### Autonomous Decision Making
+- **Planning**: The agent analyzes the PR and creates an execution plan.
+- **Tool Selection**: It chooses appropriate tools (`grep`, file read, `git diff`) based on the context.
+- **Iterative Refinement**: It observes results, adapts its strategy, and retries on failures. The agent decides what to inspect and in what order, rather than following a hardcoded workflow.
 
-### 🔧 Tool Orchestration
+### Tool Orchestration
 Powered by [OpenHands tools](https://docs.openhands.dev/sdk/arch/tool-system), the agent has access to:
-- **Terminal**: Execute bash commands (`git`, `grep`, test runners)
-- **File Operations**: Read, search, and analyze source code
-- **Planning Tools**: Break down complex reviews into subtasks
-- **Task Tracker**: Maintain review checklist and findings
+- **Terminal**: Execute shell commands (`git`, `grep`, test runners).
+- **File Operations**: Read, search, and analyze source code.
+- **Planning Tools**: Break down complex reviews into subtasks.
+- **Task Tracker**: Maintain a checklist of findings.
 
-The agent **decides** which tools to use and when—not following a script.
+The agent decides which tools to use and when, not just following a script.
 
-### 🎯 Context-Aware Reviews
-- **Skills System**: Apply repository-specific guidelines and conventions ([learn more](/sdk/guides/skill))
-- **Dynamic Focus**: Agent determines which files need deep analysis vs surface checks
-- **Three-Dot Diff**: Reviews only PR changes, ignoring stale branch artifacts
-- **Security Analysis**: Built-in risk assessment before executing commands
+### Comparison
 
-### ⚡ Why This Matters
-
-| Traditional Approach | Hodor (Agentic) |
-|---------------------|-----------------|
+| Traditional Static Analysis | Hodor (Agentic Review) |
+|-----------------------------|------------------------|
 | Single LLM call with full diff | Multi-step reasoning with tool feedback |
 | Fixed prompts, no adaptation | Dynamic strategy based on observations |
-| Shallow analysis (no code execution) | Can run tests, check builds, verify behavior |
+| Shallow analysis (no code execution) | Can run tests, check builds, and verify behavior |
 | Manual tool integration | Autonomous tool selection and orchestration |
-| No memory between steps | Stateful conversation with event history |
+| No memory between steps | Stateful execution with event history |
 
-**Result**: Hodor catches bugs that require multi-step analysis—race conditions, integration issues, security vulnerabilities—not just style violations.
+**Result**: Hodor can identify issues that require multi-step analysis, such as race conditions, integration problems, and security vulnerabilities, going beyond simple style checks.
 
 ---
 
 ## Quick Start
 
-### 1. Install + sync
+### 1. Install
 
 ```bash
 pip install uv just
@@ -57,7 +58,7 @@ cd hodor
 just sync
 ```
 
-### 2. Authenticate + configure
+### 2. Configure
 
 ```bash
 gh auth login              # GitHub (for posting reviews)
@@ -68,12 +69,13 @@ export LLM_API_KEY=sk-your-llm-key   # or ANTHROPIC_API_KEY/OPENAI_API_KEY
 ### 3. Run a review
 
 ```bash
+# Run a review and print the output to the console
 uv run hodor https://github.com/owner/repo/pull/123
 
 # Auto-post the review as a comment
 uv run hodor https://github.com/owner/repo/pull/123 --post
 
-# Watch the agent work with verbose mode
+# See the agent's real-time actions with verbose mode
 uv run hodor https://github.com/owner/repo/pull/123 --verbose
 ```
 
@@ -89,34 +91,9 @@ docker run --rm \
 
 ---
 
-## Feature Highlights
-
-### Core Capabilities
-- **Truly Agentic**: Multi-step reasoning with autonomous tool selection and iterative refinement
-- **Multi-platform**: GitHub and GitLab (including self-hosted) with URL autodetection
-- **CI-Native**: Auto-detects GitLab CI and GitHub Actions, skips redundant cloning
-- **Sandboxed Execution**: Every review runs in isolated workspace with automatic cleanup
-
-### Customization & Control
-- **Skills System**: Apply repository-specific guidelines via `.hodor/skills/` directory ([see Skills](#skills-repository-specific-context))
-- **Prompt Overrides**: Use `--prompt` (inline) or `--prompt-file` for custom instructions
-- **Reasoning Depth**: Control extended thinking with `--reasoning-effort` (none/low/medium/high)
-- **Workspace Reuse**: Use `--workspace` to cache repo state across multiple reviews
-
-### Observability
-- **Streaming Progress**: `-v/--verbose` shows real-time agent actions (tool calls, exit codes, observations)
-- **Token Metrics**: Always-on tracking of input/output tokens, cache hits, costs
-- **Event History**: Full conversation log for debugging and replay
-
----
-
 ## Skills: Repository-Specific Context
 
-Hodor supports the [OpenHands Skills system](https://docs.openhands.dev/sdk/guides/skill) for applying custom review guidelines:
-
-### What Are Skills?
-
-Skills inject **repository-specific context** into the agent's system prompt:
+Hodor supports the [OpenHands Skills system](https://docs.openhands.dev/sdk/guides/skill) for applying custom review guidelines. Skills inject repository-specific context into the agent's system prompt, such as:
 - Coding conventions (naming, patterns, anti-patterns)
 - Security requirements (auth checks, input validation)
 - Performance expectations (latency budgets, memory limits)
@@ -134,56 +111,31 @@ mkdir -p .hodor/skills
 # Code Review Guidelines for MyProject
 
 ## Security
-- All API endpoints must have authentication checks
-- User input MUST be validated and sanitized
-- Never log sensitive data (passwords, tokens, PII)
+- All API endpoints must have authentication checks.
+- User input MUST be validated and sanitized.
+- Never log sensitive data (passwords, tokens, PII).
 
 ## Performance
-- Database queries must have indexes
-- API responses should be < 200ms p95
-- Avoid N+1 queries in loops
-
-## Testing
-- All new functions need unit tests
-- Integration tests for API changes
-- Mock external services, don't call real APIs
+- Database queries must have indexes.
+- API responses should be < 200ms p95.
+- Avoid N+1 queries in loops.
 ```
 
 **3. Run review with skills:**
+The agent will automatically discover and load skills from the `.hodor/skills/` directory within the specified workspace.
 ```bash
 hodor <PR_URL> --workspace . --verbose
 ```
-
-The agent will automatically discover and load skills from `.hodor/skills/` when reviewing the PR. Use `--verbose` to see which skills were loaded.
-
-### Organizing Skills by Topic
-
-Organize guidelines into separate files by domain:
-
-```bash
-# .hodor/skills/security.md
-When reviewing security-related code:
-- Check for timing-safe comparison of credentials
-- Verify session expiration handling
-- Ensure password hashing uses bcrypt/argon2
-
-# .hodor/skills/performance.md
-Performance requirements:
-- API responses < 200ms p95
-- No N+1 queries in loops
-- Database queries must have appropriate indexes
-```
-
-All files in `.hodor/skills/` are loaded automatically on every review.
+Use `--verbose` to see which skills were loaded.
 
 See [SKILLS.md](./docs/SKILLS.md) for detailed examples and patterns.
 
 ---
 
-## CLI Usage Cheatsheet
+## CLI Usage
 
 ```bash
-# Basic console review (agent runs autonomously)
+# Basic console review
 hodor https://github.com/owner/repo/pull/123
 
 # Auto-post to the PR (requires gh/glab auth and token env vars)
@@ -192,34 +144,32 @@ hodor https://github.com/owner/repo/pull/123 --post
 # GitLab MR (including self-hosted)
 hodor https://gitlab.example.com/org/project/-/merge_requests/42 --post
 
-# With repository skills for context-aware review
+# Use repository skills for a context-aware review
 hodor ... --workspace . --verbose
 # Agent loads skills from .hodor/skills/ automatically
 
-# Custom model + extended reasoning for complex PRs
+# Use a different model and enable extended reasoning for complex PRs
 hodor ... \
   --model anthropic/claude-sonnet-4-5 \
   --reasoning-effort medium \
   --verbose
 
-# Override prompt with custom instructions
-hodor ... \
-  --prompt "Focus on authorization bugs and SQL injection vectors." \
-  --workspace /tmp/hodor \
-  --verbose
+# Append custom instructions to the base prompt
+hodor ... --prompt "Focus on authorization bugs and SQL injection vectors."
 
-# Reuse workspace for multiple PRs in same repo (faster)
+# Replace the base prompt entirely
+hodor ... --prompt-file .hodor/custom-review.md
+
+# Reuse a workspace for multiple PRs in the same repo for faster runs
 hodor PR1_URL --workspace /tmp/workspace
 hodor PR2_URL --workspace /tmp/workspace  # Reuses clone
 ```
 
-See `hodor --help` for all flags.
-
-**Pro Tip**: Use `--verbose` to watch the agent's reasoning process in real-time—see tool selections, command outputs, and iterative refinements.
+See `hodor --help` for all flags. Use `--verbose` to watch the agent's reasoning process in real-time.
 
 ---
 
-## Automation Recipes
+## Automation
 
 ### GitHub Actions
 
@@ -260,40 +210,73 @@ hodor-review:
   allow_failure: true
 ```
 
-See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows (labels, reviewer triggers, multi-model configs).
+See [AUTOMATED_REVIEWS.md](./docs/AUTOMATED_REVIEWS.md) for advanced workflows.
 
 ---
 
-## Configuration Reference
+## Configuration
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. **Recommended**: `anthropic/claude-sonnet-4-20250514`, `anthropic/claude-sonnet-4-5-20250929`, `openai/gpt-5-2025-08-07`, `gemini/gemini-2.5-pro`, `deepseek/deepseek-chat`, `moonshot/kimi-k2-0711-preview`. Supports any [LiteLLM model](https://docs.litellm.ai/docs/providers). |
+| `--model` | `anthropic/claude-sonnet-4-5-20250929` | LLM model to use. Supports any [LiteLLM model](https://docs.litellm.ai/docs/providers). |
 | `--temperature` | Auto (0.0 for non-reasoning) | Override sampling temperature for LLM reasoning. |
-| `--reasoning-effort` | `none` | Enable extended thinking for complex PRs (`low`, `medium`, `high`). Agent gets more time to plan and reason. |
-| `--prompt` / `--prompt-file` | – | Append custom instructions to the agent's system prompt. |
-| `--workspace` | Temp dir | Directory for repo checkout. Reuse for faster multi-PR reviews. Skills loaded from `.hodor/skills/` if present. |
-| `--post` | Off | Auto-post review comment to GitHub/GitLab. Requires `gh`/`glab` auth. |
-| `--verbose` | Off | Stream agent events in real-time: tool calls, bash output, observations, reasoning steps. |
+| `--reasoning-effort` | `none` | Enable extended thinking for complex PRs (`low`, `medium`, `high`). |
+| `--prompt` | – | Append custom instructions to the base prompt. |
+| `--prompt-file` | – | Replace base prompt with a custom markdown file. |
+| `--workspace` | Temp dir | Directory for repo checkout. Re-use for faster multi-PR reviews. |
+| `--post` | Off | Auto-post review comment to GitHub/GitLab. |
+| `--verbose` | Off | Stream agent events in real-time. |
 
 **Environment Variables**
 
 | Variable | Purpose | Required |
 |----------|---------|----------|
-| `LLM_API_KEY` | LLM provider authentication (recommended) | ✅ Yes (see note) |
+| `LLM_API_KEY` | LLM provider authentication (recommended) | Yes (see note) |
 | `ANTHROPIC_API_KEY` | Claude API key (backward compatibility) | Alternative to above |
 | `OPENAI_API_KEY` | OpenAI API key (backward compatibility) | Alternative to above |
 | `GITHUB_TOKEN` / `GITLAB_TOKEN` | Post comments to PRs/MRs | Only with `--post` |
-| `GITLAB_HOST` | Self-hosted GitLab instance (extracted from URL automatically) | Optional |
+| `GITLAB_HOST` | Self-hosted GitLab instance (auto-detected) | Optional |
 | `LLM_BASE_URL` | Custom OpenAI-compatible gateway | Optional |
 
-**Note**: Hodor checks API keys in order: `LLM_API_KEY` → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY` (uses first found).
+**Note**: Hodor checks for API keys in the order: `LLM_API_KEY` → `ANTHROPIC_API_KEY` → `OPENAI_API_KEY`.
 
 **CI Detection**
 
-Hodor auto-detects CI environments and skips cloning:
-- **GitLab CI**: Uses `$CI_PROJECT_DIR` when `$GITLAB_CI=true`
-- **GitHub Actions**: Uses `$GITHUB_WORKSPACE` when `$GITHUB_ACTIONS=true`
+Hodor auto-detects CI environments and optimizes its execution:
+- **GitLab CI**: Uses `$CI_PROJECT_DIR` as the workspace, `$CI_MERGE_REQUEST_TARGET_BRANCH_NAME` for the target branch, and `$CI_MERGE_REQUEST_DIFF_BASE_SHA` for deterministic diffs.
+- **GitHub Actions**: Uses `$GITHUB_WORKSPACE` and `$GITHUB_BASE_REF` for target branch detection.
+
+---
+
+## Observability
+
+Every run prints token usage, cache hits, runtime, and an estimated cost:
+
+```
+============================================================
+Token Usage Metrics:
+  - Input tokens:       18,240
+  - Output tokens:       3,102
+  - Cache hits:         12,480 (68.5%)
+  - Total tokens:       21,342
+
+Cost Estimate:      $0.42
+Review Time:        2m 11s
+============================================================
+```
+
+With the `--verbose` flag, you can see the agent's reasoning process:
+```
+Executing: gh pr diff 123 --no-pager
+  ✓ Exit code: 0
+Agent planning: Breaking down review into 3 subtasks
+Executing: grep -r "TODO\|FIXME" src/
+  ✓ Exit code: 0
+Reading file: src/auth.py
+Agent analyzing: Checking authentication flow
+```
+
+This helps you understand what the agent is doing, which tools it chooses, and how it adapts.
 
 ---
 
@@ -307,42 +290,6 @@ just review URL # Review a PR
 ```
 
 See [AGENTS.md](./AGENTS.md) for architecture details and contribution guidelines.
-
----
-
-## Metrics & Observability
-
-Every run prints token usage, cache hits, runtime, and estimated cost:
-
-```
-============================================================
-📊 Token Usage Metrics:
-  • Input tokens:       18,240
-  • Output tokens:       3,102
-  • Cache hits:         12,480 (68.5%)
-  • Total tokens:       21,342
-
-💰 Cost Estimate:      $0.42
-⏱️  Review Time:        2m 11s
-============================================================
-```
-
-**With `--verbose` flag**, see the agent's reasoning process:
-```
-🔧 Executing: gh pr diff 123 --no-pager
-   ✓ Exit code: 0
-💬 Agent planning: Breaking down review into 3 subtasks
-🔧 Executing: grep -r "TODO\|FIXME" src/
-   ✓ Exit code: 0
-✏️  Reading file: src/auth.py
-💬 Agent analyzing: Checking authentication flow
-```
-
-This visibility helps you understand:
-- **What the agent is thinking** (planning, analyzing)
-- **Which tools it chooses** (and why)
-- **How it adapts** (retries, error handling)
-- **Token efficiency** (cache hits, prompt optimization)
 
 ---
 

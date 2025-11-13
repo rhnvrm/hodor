@@ -70,6 +70,9 @@ Issues = "https://github.com/mr-karan/hodor/issues"
 where = ["."]
 include = ["hodor*"]
 
+[tool.setuptools.package-data]
+hodor = ["prompts/templates/*.md"]
+
 [tool.black]
 line-length = 120
 target-version = ['py313']
