@@ -31,12 +31,17 @@ RUN uv sync --no-dev --frozen --no-editable
 # Final stage
 FROM python:3.13-slim
 
-# Install system dependencies
+# Install system dependencies and common tools for PR reviews
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         git \
         curl \
-        ca-certificates && \
+        ca-certificates \
+        jq \
+        shellcheck \
+        tree \
+        vim \
+        less && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

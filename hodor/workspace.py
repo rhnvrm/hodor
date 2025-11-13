@@ -21,7 +21,7 @@ class WorkspaceError(Exception):
     pass
 
 
-def _detect_ci_workspace(owner: str, repo: str, pr_number: str) -> Path | None:
+def _detect_ci_workspace(owner: str, repo: str, pr_number: str) -> tuple[Path | None, str | None]:
     """Detect if running in CI environment with repo already cloned.
 
     Checks for GitLab CI and GitHub Actions environments.
@@ -32,33 +32,35 @@ def _detect_ci_workspace(owner: str, repo: str, pr_number: str) -> Path | None:
         pr_number: Pull/merge request number
 
     Returns:
-        Path to existing workspace if in CI, None otherwise
+        Tuple of (workspace_path, target_branch) if in CI, (None, None) otherwise
     """
     # GitLab CI detection
     if os.getenv("GITLAB_CI") == "true":
         project_dir = os.getenv("CI_PROJECT_DIR")
         project_path = os.getenv("CI_PROJECT_PATH")  # e.g., "group/subgroup/repo"
         mr_iid = os.getenv("CI_MERGE_REQUEST_IID")
+        target_branch = os.getenv("CI_MERGE_REQUEST_TARGET_BRANCH_NAME")  # e.g., "main", "develop"
 
         if project_dir and project_path:
             # Check if this matches our target repo
             expected_path = f"{owner}/{repo}"
             if project_path == expected_path or project_path.endswith(f"/{expected_path}"):
-                logger.info(f"Detected GitLab CI environment (MR IID: {mr_iid})")
-                return Path(project_dir)
+                logger.info(f"Detected GitLab CI environment (MR IID: {mr_iid}, target: {target_branch or 'unknown'})")
+                return Path(project_dir), target_branch
 
     # GitHub Actions detection
     if os.getenv("GITHUB_ACTIONS") == "true":
         workspace_dir = os.getenv("GITHUB_WORKSPACE")
         repository = os.getenv("GITHUB_REPOSITORY")  # e.g., "owner/repo"
+        base_ref = os.getenv("GITHUB_BASE_REF")  # Base branch for PRs
 
         if workspace_dir and repository:
             expected_repo = f"{owner}/{repo}"
             if repository == expected_repo:
-                logger.info("Detected GitHub Actions environment")
-                return Path(workspace_dir)
+                logger.info(f"Detected GitHub Actions environment (base: {base_ref or 'unknown'})")
+                return Path(workspace_dir), base_ref
 
-    return None
+    return None, None
 
 
 def _is_same_repo(workspace: Path, platform: Platform, owner: str, repo: str) -> bool:
@@ -104,7 +106,7 @@ def setup_workspace(
     base_branch: str | None = None,
     working_dir: Path | None = None,
     reuse: bool = True,
-) -> Path:
+) -> tuple[Path, str]:
     """Setup workspace by cloning repo and checking out PR branch.
 
     Args:
@@ -118,14 +120,16 @@ def setup_workspace(
         reuse: If True and workspace exists with same repo, reuse it (faster)
 
     Returns:
-        Path to workspace directory
+        Tuple of (workspace_path, target_branch)
 
     Raises:
         WorkspaceError: If setup fails
     """
     try:
         # Check if running in CI environment with repo already cloned
-        ci_workspace = _detect_ci_workspace(owner, repo, pr_number)
+        ci_workspace, ci_target_branch = _detect_ci_workspace(owner, repo, pr_number)
+        detected_target_branch = ci_target_branch  # Track detected target branch
+
         if ci_workspace:
             workspace = ci_workspace
             # Skip cloning, just setup the PR branch
@@ -153,14 +157,20 @@ def setup_workspace(
         # Skip workspace setup entirely if in CI (repo already cloned and on the right branch)
         if not ci_workspace:
             if platform == "github":
-                _setup_github_workspace(workspace, owner, repo, pr_number)
+                target_branch = _setup_github_workspace(workspace, owner, repo, pr_number)
+                if detected_target_branch is None:
+                    detected_target_branch = target_branch
             elif platform == "gitlab":
-                _setup_gitlab_workspace(workspace, owner, repo, pr_number, host)
+                target_branch = _setup_gitlab_workspace(workspace, owner, repo, pr_number, host)
+                if detected_target_branch is None:
+                    detected_target_branch = target_branch
             else:
                 raise WorkspaceError(f"Unsupported platform: {platform}")
 
-        logger.info(f"Workspace ready at: {workspace}")
-        return workspace
+        # Fallback to "main" if target branch couldn't be detected
+        final_target_branch = detected_target_branch or base_branch or "main"
+        logger.info(f"Workspace ready at: {workspace} (target branch: {final_target_branch})")
+        return workspace, final_target_branch
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Command failed: {e.cmd}")
@@ -175,7 +185,7 @@ def setup_workspace(
         raise WorkspaceError(f"Failed to setup workspace: {e}") from e
 
 
-def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: str) -> None:
+def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: str) -> str:
     """Setup GitHub PR workspace using gh CLI.
 
     Args:
@@ -183,6 +193,9 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         owner: Repository owner
         repo: Repository name
         pr_number: PR number
+
+    Returns:
+        Base branch name (target branch of the PR)
     """
     logger.info(f"Setting up GitHub workspace for {owner}/{repo}/pull/{pr_number}")
 
@@ -250,7 +263,8 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
                 f"Verify PR exists: https://github.com/{owner}/{repo}/pull/{pr_number}"
             ) from e
 
-        # Get PR info for logging
+        # Get PR info for base branch detection
+        base_branch = "main"  # Default fallback
         try:
             result = subprocess.run(
                 ["gh", "pr", "view", pr_number, "--json", "headRefName,baseRefName"],
@@ -261,8 +275,9 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
             import json
 
             pr_info = json.loads(result.stdout)
+            base_branch = pr_info.get("baseRefName", "main")
             logger.info(f"Checked out PR branch: {pr_info.get('headRefName')}")
-            logger.info(f"Base branch: {pr_info.get('baseRefName')}")
+            logger.info(f"Base branch: {base_branch}")
         except (subprocess.CalledProcessError, json.JSONDecodeError) as e:
             # Non-critical - just log and continue
             logger.warning(f"Could not fetch PR metadata: {e}")
@@ -271,8 +286,10 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         # Restore original directory
         os.chdir(original_dir)
 
+    return base_branch
 
-def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: str, host: str | None = None) -> None:
+
+def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: str, host: str | None = None) -> str:
     """Setup GitLab MR workspace using glab CLI.
 
     Supports self-hosted GitLab instances via host parameter or GITLAB_HOST environment variable.
@@ -283,6 +300,9 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         repo: Repository name
         pr_number: Merge request number
         host: GitLab host (e.g., 'gitlab.com', 'gitlab.example.com'). Falls back to GITLAB_HOST env var or 'gitlab.com'.
+
+    Returns:
+        Target branch name (base branch of the MR)
     """
     # Priority: host parameter > GITLAB_HOST env var > default to gitlab.com
     gitlab_host = host or os.getenv("GITLAB_HOST", "gitlab.com")
@@ -452,6 +472,9 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
     finally:
         # Restore original directory
         os.chdir(original_dir)
+
+    # Return target branch (fallback to "main" if not available)
+    return target_branch or "main"
 
 
 def cleanup_workspace(workspace: Path) -> None:

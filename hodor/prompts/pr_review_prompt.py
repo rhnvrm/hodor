@@ -16,6 +16,7 @@ def build_pr_review_prompt(
     repo: str,
     pr_number: str,
     platform: str,
+    target_branch: str = "main",
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
 ) -> str:
@@ -27,6 +28,7 @@ def build_pr_review_prompt(
         repo: Repository name
         pr_number: PR number
         platform: "github" or "gitlab"
+        target_branch: Target/base branch of the PR (e.g., "main", "develop")
         custom_instructions: Optional custom prompt text (inline)
         custom_prompt_file: Optional path to custom prompt file
 
@@ -77,21 +79,21 @@ This shows you the EXACT files changed in this PR. Write down the list of change
 **CRITICAL RULES:**
 - ✅ ONLY review files that appear in the diff from Step 1
 - ✅ ONLY analyze the actual code changes (+ and - lines in the diff)
-- ✅ Use three-dot diff syntax (`git --no-pager diff origin/main...HEAD`) to see ONLY changes introduced on this branch
+- ✅ Use three-dot diff syntax (`git --no-pager diff origin/{target_branch}...HEAD`) to see ONLY changes introduced on this branch
 - ❌ NEVER review files not in the diff
 - ❌ NEVER flag "files will be deleted when merging" - that's just outdated branch
 - ❌ NEVER flag "dependency version downgrade" - that's just branch not rebased
-- ❌ NEVER compare entire codebase to main - DIFF ONLY
+- ❌ NEVER compare entire codebase to {target_branch} - DIFF ONLY
 
 ### Git Diff Syntax (CRITICAL)
 **ALWAYS use three-dot syntax** to see only changes introduced on the source branch:
 ```bash
-git --no-pager diff origin/main...HEAD
+git --no-pager diff origin/{target_branch}...HEAD
 ```
 
 **Why three dots?**
-- Two dots (`..`) shows ALL differences between branches (includes changes on main not in source = false positives)
-- Three dots (`...`) shows ONLY changes since branch diverged (excludes changes already on main)
+- Two dots (`..`) shows ALL differences between branches (includes changes on {target_branch} not in source = false positives)
+- Three dots (`...`) shows ONLY changes since branch diverged (excludes changes already on {target_branch})
 
 This prevents false positives about "files being deleted" or "dependencies downgraded" when the branch is just not rebased.
 
@@ -116,13 +118,18 @@ Run this ONCE at the start. All subsequent git commands will output directly wit
 
 **FIRST** (always start here):
 - `{pr_diff_cmd}` - Get list of changed files (RUN THIS FIRST!)
+  - This is the MOST RELIABLE method - it automatically handles target branch detection
+  - Works in detached HEAD CI environments where `origin/{target_branch}` may not exist
 
 **THEN** (only for files in the diff):
-- `git --no-pager diff origin/main...HEAD -- path/to/file` - See detailed changes (three dots = changes since branch diverged)
+- **PREFERRED**: Use `{pr_diff_cmd}` again to see full changes for all files
+- **ALTERNATIVE**: `git --no-pager diff origin/{target_branch}...HEAD -- path/to/file` - See changes for specific file
+  - ⚠️  May fail in CI if `origin/{target_branch}` doesn't exist
+  - Only use if CLI diff command is not available
 - `planning_file_editor` - Read full file with context
 - `grep` - Search for patterns in changed files only
 
-**CRITICAL**: Use three dots (`...`) not two dots (`..`) in git diff! Three dots shows ONLY changes introduced on this branch, excluding changes already on main.
+**CRITICAL**: Always prefer `{pr_diff_cmd}` over raw git commands! It's more reliable in CI environments.
 
 ## Bug Criteria (ALL must apply)
 - Meaningfully impacts production (accuracy/performance/security/maintainability)
@@ -205,7 +212,7 @@ Total issues: X critical, Y important, Z minor.
 3. **Be honest**: If code is clean, say so - don't invent issues
 4. **Focus on bugs**: Not style, formatting, or subjective preferences
 5. **Provide value**: Each issue should have clear impact and trigger
-6. **Stay on-branch**: Never file bugs that only exist because the feature branch is missing commits already present on `origin/main`
+6. **Stay on-branch**: Never file bugs that only exist because the feature branch is missing commits already present on `origin/{target_branch}`
 
 Start by running `{pr_diff_cmd}` and then using grep/glob to search for potential issues.
 """

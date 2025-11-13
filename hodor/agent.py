@@ -217,8 +217,9 @@ def review_pr(
 
     # Setup workspace (clone repo and checkout PR branch)
     workspace = None
+    target_branch = "main"  # Default fallback
     try:
-        workspace = setup_workspace(
+        workspace, target_branch = setup_workspace(
             platform=platform,
             owner=owner,
             repo=repo,
@@ -227,7 +228,7 @@ def review_pr(
             working_dir=workspace_dir,
             reuse=workspace_dir is not None,  # Only reuse if user specified a workspace dir
         )
-        logger.info(f"Workspace ready: {workspace}")
+        logger.info(f"Workspace ready: {workspace} (target branch: {target_branch})")
     except Exception as e:
         logger.error(f"Failed to setup workspace: {e}")
         raise RuntimeError(f"Failed to setup workspace: {e}") from e
@@ -267,6 +268,7 @@ def review_pr(
             repo=repo,
             pr_number=str(pr_number),
             platform=platform,
+            target_branch=target_branch,
             custom_instructions=custom_prompt,
             custom_prompt_file=prompt_file,
         )
