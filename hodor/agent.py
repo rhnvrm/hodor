@@ -399,7 +399,7 @@ def review_pr(
                         if cache_write_tokens > 0:
                             logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
                         if combined.response_latencies:
-                            avg_latency = sum(combined.response_latencies) / len(combined.response_latencies)
+                            avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(combined.response_latencies)
                             logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
             except Exception as e:
                 logger.warning(f"Failed to get metrics: {e}")
