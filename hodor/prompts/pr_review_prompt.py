@@ -66,21 +66,24 @@ def build_pr_review_prompt(
     if platform == "github":
         cli_tool = "gh"
         pr_view_cmd = f"gh pr view {pr_number}"
-        pr_diff_cmd = f"gh pr diff {pr_number}"
+        # Use git diff --name-only instead of gh pr diff to avoid dumping full diff
+        pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
         pr_checks_cmd = f"gh pr checks {pr_number}"
-        # GitHub specific diff command (fallback)
+        # GitHub specific diff command (base)
         git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
     else:  # gitlab
         cli_tool = "glab"
         pr_view_cmd = f"glab mr view {pr_number}"
-        pr_diff_cmd = f"glab mr diff {pr_number}"
-        pr_checks_cmd = f"glab ci view"
         # GitLab specific diff command - use diff_base_sha if available (most reliable)
         if diff_base_sha:
+            # Use git diff --name-only to list files first, not full diff
+            pr_diff_cmd = f"git --no-pager diff {diff_base_sha} HEAD --name-only"
             git_diff_cmd = f"git --no-pager diff {diff_base_sha} HEAD"
             logger.info(f"Using GitLab CI_MERGE_REQUEST_DIFF_BASE_SHA: {diff_base_sha[:8]}")
         else:
+            pr_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD --name-only"
             git_diff_cmd = f"git --no-pager diff origin/{target_branch}...HEAD"
+        pr_checks_cmd = f"glab ci view"
 
     # Prepare diff explanation based on platform and available SHA
     if diff_base_sha:
