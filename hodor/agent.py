@@ -15,6 +15,8 @@ from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.event import Event
 from openhands.sdk.workspace import LocalWorkspace
 
+from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
+from .gitlab import GitLabAPIError, fetch_gitlab_mr_info
 from .llm import create_hodor_agent, get_api_key
 from .prompts.pr_review_prompt import build_pr_review_prompt
 from .skills import discover_skills
@@ -267,6 +269,19 @@ def review_pr(
             cleanup_workspace(workspace)
         raise RuntimeError(f"Failed to create agent: {e}") from e
 
+    mr_metadata = None
+    if platform == "gitlab":
+        try:
+            mr_metadata = fetch_gitlab_mr_info(owner, repo, pr_number, host, include_comments=True)
+        except GitLabAPIError as e:
+            logger.warning(f"Failed to fetch GitLab metadata: {e}")
+    elif platform == "github":
+        try:
+            github_raw = fetch_github_pr_info(owner, repo, pr_number)
+            mr_metadata = normalize_github_metadata(github_raw)
+        except GitHubAPIError as e:
+            logger.warning(f"Failed to fetch GitHub metadata: {e}")
+
     # Build prompt
     try:
         prompt = build_pr_review_prompt(
@@ -277,6 +292,7 @@ def review_pr(
             platform=platform,
             target_branch=target_branch,
             diff_base_sha=diff_base_sha,
+            mr_metadata=mr_metadata,
             custom_instructions=custom_prompt,
             custom_prompt_file=prompt_file,
         )
