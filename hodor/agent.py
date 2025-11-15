@@ -141,7 +141,7 @@ def post_review_comment(
             return {"success": True, "platform": "github", "pr_number": pr_number}
 
         elif platform == "gitlab":
-            # Use python-gitlab SDK to post comment
+            # Use glab CLI to post comment
             post_gitlab_mr_comment(
                 owner,
                 repo,
@@ -179,6 +179,7 @@ def review_pr(
     cleanup: bool = True,
     workspace_dir: Path | None = None,
     output_format: str = "markdown",
+    max_iterations: int = 500,
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -195,6 +196,7 @@ def review_pr(
         cleanup: Clean up workspace after review (default: True)
         workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
         output_format: Output format - "markdown" or "json" (default: "markdown")
+        max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
 
     Returns:
         Review text as string (format depends on output_format)
@@ -342,11 +344,16 @@ def review_pr(
         logger.info("Creating OpenHands conversation...")
         # Use LocalWorkspace for better integration with OpenHands SDK
         workspace_obj = LocalWorkspace(working_dir=str(workspace))
+
+        # Handle unlimited iterations (-1 -> very large number)
+        iteration_limit = 1_000_000 if max_iterations == -1 else max_iterations
+
         # Register event callback for real-time monitoring if verbose
         conversation = Conversation(
             agent=agent,
             workspace=workspace_obj,
             callbacks=[on_event] if verbose else None,
+            max_iteration_per_run=iteration_limit,
         )
 
         logger.info("Sending prompt to agent...")

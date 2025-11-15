@@ -106,6 +106,17 @@ def parse_llm_args(ctx, param, value):
     type=click.Path(),
     help="Workspace directory to use (creates temp dir if not specified). Reuses workspace if same repo.",
 )
+@click.option(
+    "--max-iterations",
+    default=500,
+    type=int,
+    help="Maximum number of agent iterations/steps (default: 500, use -1 for unlimited)",
+)
+@click.option(
+    "--ultrathink",
+    is_flag=True,
+    help="Enable maximum reasoning effort with extended thinking budget (shortcut for --reasoning-effort high)",
+)
 def main(
     pr_url: str,
     model: str,
@@ -118,13 +129,15 @@ def main(
     prompt: str | None,
     prompt_file: str | None,
     workspace: str | None,
+    max_iterations: int,
+    ultrathink: bool,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
 
     Hodor uses OpenHands SDK to run an AI agent that clones the repository,
-    checks out the PR branch, and analyzes the code using bash tools (gh, git),
-    plus python-gitlab for GitLab metadata and note posting.
+    checks out the PR branch, and analyzes the code using bash tools (gh, git,
+    glab) for metadata fetching and comment posting.
 
     \b
     Examples:
@@ -152,7 +165,7 @@ def main(
         LLM_API_KEY or ANTHROPIC_API_KEY or OPENAI_API_KEY - LLM API key (required)
         LLM_BASE_URL - Custom LLM endpoint (optional)
         GITHUB_TOKEN - GitHub API token (for gh CLI authentication)
-        GITLAB_TOKEN / GITLAB_PRIVATE_TOKEN / CI_JOB_TOKEN - GitLab API tokens for python-gitlab
+        GITLAB_TOKEN / GITLAB_PRIVATE_TOKEN / CI_JOB_TOKEN - GitLab API tokens for glab CLI
         GITLAB_HOST - GitLab host for self-hosted instances (default: gitlab.com)
 
     \b
@@ -186,12 +199,23 @@ def main(
     # Parse prompt file path
     prompt_file_path = Path(prompt_file) if prompt_file else None
 
+    # Handle ultrathink flag
+    if ultrathink:
+        reasoning_effort = "high"
+        # Ensure extended_thinking_budget is high if not already set
+        if "extended_thinking_budget" not in llm:
+            llm = {**llm, "extended_thinking_budget": 500000}
+
     console.print("\n[bold cyan]🚪 Hodor - AI Code Review Agent[/bold cyan]")
     console.print(f"[dim]Platform: {platform.upper()}[/dim]")
     console.print(f"[dim]PR URL: {pr_url}[/dim]")
     console.print(f"[dim]Model: {model}[/dim]")
     if reasoning_effort:
         console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
+    if max_iterations == -1:
+        console.print(f"[dim]Max Iterations: Unlimited[/dim]")
+    else:
+        console.print(f"[dim]Max Iterations: {max_iterations}[/dim]")
     console.print()
 
     try:
@@ -217,6 +241,7 @@ def main(
                 cleanup=workspace is None,  # Only cleanup if using temp dir
                 workspace_dir=workspace_path,
                 output_format="json" if output_json else "markdown",
+                max_iterations=max_iterations,
             )
 
             progress.update(task, description="Review complete!")
