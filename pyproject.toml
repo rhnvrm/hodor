@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hodor"
-version = "0.1.0"
+version = "0.2.5"
 description = "AI-powered code review agent that finds bugs, security issues, and logic errors in pull requests"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -22,9 +22,9 @@ classifiers = [
 
 dependencies = [
     # LLM & Agent Framework (OpenHands SDK)
-    # Using official OpenHands SDK
-    "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-sdk",
-    "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-tools",
+    # Using official OpenHands SDK v1.4.1
+    "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@v1.4.1#subdirectory=openhands-sdk",
+    "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@v1.4.1#subdirectory=openhands-tools",
 
     # Git operations (keeping gitpython for local git operations if needed)
     "gitpython>=3.1.0",
