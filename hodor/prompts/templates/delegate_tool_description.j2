@@ -1,0 +1,63 @@
+Spawn and manage sub-agents to parallelize work.
+
+## Commands
+
+### spawn
+Create sub-agents with identifiers and optional specialized types.
+
+Parameters:
+- **ids** (required): List of unique identifiers for sub-agents (e.g., ["worker_1", "worker_2"])
+- **agent_types** (optional): List of agent types for each ID. If omitted, uses default agent.
+
+Use descriptive identifiers that make sense for your use case (e.g., "security_check", "test_coverage", "sql_safety").
+
+### delegate
+Assign tasks to spawned sub-agents. This is a **blocking operation** - waits for all sub-agents to complete.
+
+Parameters:
+- **tasks** (required): Dictionary mapping sub-agent identifiers to task descriptions
+
+**Important**: Identifiers used in delegate must match those used in spawn.
+
+## Available Agent Types
+{{ agent_types_info }}
+
+## Workspace
+Sub-agents operate in the same workspace as the main agent: `{{ workspace_path }}`
+
+## Usage Examples
+
+**Example 1: Spawn default agents**
+```json
+{
+  "command": "spawn",
+  "ids": ["worker_1", "worker_2"]
+}
+```
+
+**Example 2: Spawn specialized agents**
+```json
+{
+  "command": "spawn",
+  "ids": ["security", "tests"],
+  "agent_types": ["worker", "worker"]
+}
+```
+
+**Example 3: Delegate tasks**
+```json
+{
+  "command": "delegate",
+  "tasks": {
+    "worker_1": "MISSION: Check auth.py for null handling issues. FILE: auth.py. REPORT: List issues with line numbers.",
+    "worker_2": "MISSION: Verify SQL injection safety. FILE: database.py. REPORT: Flag any string concatenation."
+  }
+}
+```
+
+## Best Practices
+
+1. Use spawn first, then delegate
+2. Keep task descriptions clear with MISSION/FILE/REPORT format
+3. Collect results and synthesize findings after delegation completes
+4. Delegate simple single-file analysis; handle complex cross-file logic directly

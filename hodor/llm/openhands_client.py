@@ -498,6 +498,12 @@ def create_hodor_agent(
     if enable_subagents and lite_model:
         from openhands.tools.delegate import DelegateTool, register_agent
         from openhands.sdk.tool import register_tool
+        import openhands.tools.delegate.definition as delegate_def
+
+        # Patch the PROMPT_DIR to use our template (fixes missing template in SDK packaging)
+        delegate_def.PROMPT_DIR = TEMPLATES_DIR
+        if verbose:
+            logger.info(f"Patched DelegateTool PROMPT_DIR to: {TEMPLATES_DIR}")
 
         # Get API key for lite model (may be different provider)
         lite_api_key = get_api_key(lite_model)
