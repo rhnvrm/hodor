@@ -333,6 +333,7 @@ def create_agent_factory(
     from openhands.sdk.agent.agent import Agent
     from openhands.sdk.context.agent_context import AgentContext
     from openhands.sdk.context import Skill
+    from openhands.sdk.context.condenser import LLMSummarizingCondenser
     from openhands.sdk.tool.spec import Tool
     from openhands.tools.glob import GlobTool
     from openhands.tools.grep import GrepTool
@@ -371,17 +372,28 @@ def create_agent_factory(
             Tool(name=PlanningFileEditorTool.name),
         ]
 
+        # Aggressive condenser to prevent context bloat
+        # max_size=20: summarize after 20 events
+        # keep_first=2: preserve the task prompt
+        worker_condenser = LLMSummarizingCondenser(
+            llm=worker_llm.model_copy(update={"usage_id": "analyzer_condenser"}),
+            max_size=20,
+            keep_first=2,
+        )
+
         return Agent(
             llm=worker_llm,
             tools=tools,
             context=AgentContext(skills=skills),
+            condenser=worker_condenser,
         )
 
     def create_verifier_agent(parent_llm: LLM) -> Agent:
         """Create an Opus verifier agent for targeted P1/P2 verification.
 
-        Verifiers have NO file tools - they work only with the code snippet
+        Verifiers have NO tools at all - they work only with the code snippet
         provided in their task. This keeps context minimal and verification fast.
+        They can only think and respond - no file reading, no terminal commands.
         """
         verifier_llm = LLM(
             model=verifier_model,
@@ -393,11 +405,10 @@ def create_agent_factory(
 
         skills = [Skill(name="verifier", content=verifier_skill_content)]
 
-        # NO file tools - verifier works only with provided code snippet
-        # This enforces minimal context and prevents scope creep
-        tools = [
-            Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
-        ]
+        # ZERO tools - verifier can only think and respond
+        # This prevents scope creep and keeps verification fast
+        # The code snippet is provided IN the task, no fetching needed
+        tools = []
 
         return Agent(
             llm=verifier_llm,
@@ -425,10 +436,18 @@ def create_agent_factory(
             Tool(name=PlanningFileEditorTool.name),
         ]
 
+        # Aggressive condenser to prevent context bloat
+        context_condenser = LLMSummarizingCondenser(
+            llm=context_llm.model_copy(update={"usage_id": "context_condenser"}),
+            max_size=20,
+            keep_first=2,
+        )
+
         return Agent(
             llm=context_llm,
             tools=tools,
             context=AgentContext(skills=skills),
+            condenser=context_condenser,
         )
 
     return {

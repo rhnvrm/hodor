@@ -400,8 +400,8 @@ def review_pr(
                     reasoning_tokens = usage.reasoning_tokens or 0
                     total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + reasoning_tokens
 
-                    # Cost estimate
-                    cost = combined.accumulated_cost or 0
+                    # Cost estimate (orchestrator only)
+                    orchestrator_cost = combined.accumulated_cost or 0
 
                     # Calculate cache hit rate
                     cache_hit_rate = 0
@@ -410,7 +410,7 @@ def review_pr(
 
                     # Print metrics (always, not just verbose)
                     print("\n" + "=" * 60)
-                    print("📊 Token Usage Metrics:")
+                    print("📊 Token Usage Metrics (Orchestrator Only):")
                     print(f"  • Input tokens:       {prompt_tokens:,}")
                     print(f"  • Output tokens:      {completion_tokens:,}")
                     if cache_read_tokens > 0:
@@ -418,7 +418,9 @@ def review_pr(
                     if reasoning_tokens > 0:
                         print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
                     print(f"  • Total tokens:       {total_tokens:,}")
-                    print(f"\n💰 Cost Estimate:      ${cost:.4f}")
+                    print(f"\n💰 Orchestrator Cost:  ${orchestrator_cost:.4f}")
+                    if enable_subagents:
+                        print("⚠️  Note: Worker costs not included (see logs for per-agent costs)")
                     print(f"⏱️  Review Time:        {review_time_str}")
                     print("=" * 60 + "\n")
 

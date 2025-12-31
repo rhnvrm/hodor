@@ -9,43 +9,51 @@ Your task contains:
 - **FILES**: Reference files to analyze (existing code, not the PR)
 - **FOCUS**: What patterns to look for
 
-## Your Task
+## Efficient Discovery Strategy
 
-Analyze the provided existing files and extract common patterns that are "normal" for this codebase.
+1. Read 1-2 reference files that are similar to the PR's changes
+2. Extract key patterns
+3. Report findings immediately
+
+**DO NOT:**
+- Read more than 3 files total
+- Explore the entire codebase
+- Read unrelated files
 
 ## What to Look For
 
-1. **State Persistence**: How does the codebase save/load state? (e.g., DumpGob, JSON, etc.)
-2. **Error Handling**: How are errors handled? (return early, wrap, log, ignore)
-3. **Logging Patterns**: What logger is used? What's logged at what level?
-4. **Concurrency**: How is thread safety achieved? (mutex naming, lock patterns)
-5. **Auth Patterns**: How is authentication handled?
-6. **Resource Cleanup**: How are resources released? (defer, explicit close)
+1. **State Persistence**: How does the codebase save/load state?
+2. **Error Handling**: How are errors handled? (return early, wrap, log)
+3. **Logging Patterns**: What logger is used? What's logged?
+4. **Concurrency**: How is thread safety achieved?
+5. **Resource Cleanup**: How are resources released?
 
 ## Output Format
 
-```json
-{
-  "patterns_found": [
-    {
-      "name": "state_persistence",
-      "description": "Uses DumpGob/LoadGob pattern for state serialization",
-      "example_file": "pkg/reader/sensibull/dump.go",
-      "example_snippet": "func (r *Reader) DumpGob() ([]byte, error)"
-    }
-  ],
-  "conventions": [
-    "Mutex fields are named 'mu'",
-    "Errors are logged at caller, not at source",
-    "State files use .gob extension"
-  ],
-  "summary": "1-2 sentence summary of codebase style"
-}
+Report patterns concisely:
+
+```
+## Codebase Patterns
+
+### State Persistence
+- Uses DumpGob/LoadGob for serialization
+- State files use .gob extension
+
+### Error Handling
+- Errors logged at call site, not source
+- Uses fmt.Errorf with %w for wrapping
+
+### Concurrency
+- Mutex named 'mu'
+- Lock/Unlock pattern, not defer
+
+### Summary
+[1-2 sentences summarizing the codebase style]
 ```
 
-## CRITICAL CONSTRAINTS
+## Critical Rules
 
-- ONLY read files specified in your task
-- Focus on PATTERNS, not bugs
-- Keep response under 200 words
-- Be specific: cite file names and line patterns
+1. **Be fast** - Read only what's needed
+2. **Be specific** - Cite actual patterns with examples
+3. **Finish promptly** - Don't iterate looking for more
+4. **Stay focused** - Only patterns relevant to the PR type
