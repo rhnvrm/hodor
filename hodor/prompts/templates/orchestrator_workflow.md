@@ -21,15 +21,14 @@ You are an orchestrator with access to worker agents for parallel code review.
 
 ### PHASE 0: PREPARE CONTEXT (Do This First)
 
-Get the list of changed files and prepare diffs:
+Get the list of changed files:
 
 ```bash
 # List changed files
 git --no-pager diff BASE_SHA HEAD --name-only
-
-# Get diff content for key files (you'll pass this to workers)
-git --no-pager diff BASE_SHA HEAD -- pkg/listener/viewtrade.go
 ```
+
+Note the BASE_SHA - workers will need it to fetch their specific file diffs.
 
 **Optional**: If the codebase has similar existing files, spawn a context worker to discover patterns. Skip this for small PRs or well-known codebases.
 
@@ -48,21 +47,21 @@ Spawn analyzer workers and delegate with DIFF CONTENT included.
 }
 ```
 
-**Step 2: Delegate WITH diff content**
+**Step 2: Delegate tasks to workers**
 
-IMPORTANT: Include the actual diff in the task so workers don't need to fetch it.
+Give each worker their file path. Workers will fetch their own diff.
 
 ```json
 {
   "command": "delegate",
   "tasks": {
-    "analyze_listener": "MISSION: Review for bugs and error handling.\nFILE: pkg/listener/viewtrade.go\n\nDIFF CONTENT:\n```diff\n[paste the diff output here]\n```\n\nREPORT: Issues with severity (P1/P2/P3), line numbers, and evidence.",
-    "analyze_reader": "MISSION: Check concurrency and resource management.\nFILE: pkg/reader/viewtrade/reader.go\n\nDIFF CONTENT:\n```diff\n[paste the diff output here]\n```\n\nREPORT: Findings with line numbers."
+    "analyze_listener": "MISSION: Review for bugs and error handling.\nFILE: pkg/listener/viewtrade.go\nBASE_SHA: <base_sha>\nREPORT: Issues with severity (P1/P2/P3), line numbers, and evidence.",
+    "analyze_reader": "MISSION: Check concurrency and resource management.\nFILE: pkg/reader/viewtrade/reader.go\nBASE_SHA: <base_sha>\nREPORT: Findings with line numbers."
   }
 }
 ```
 
-Workers will analyze the provided diff directly, reducing tool usage.
+Workers will run `git diff BASE_SHA HEAD -- <file>` to get their diff.
 
 ---
 
