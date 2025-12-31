@@ -616,9 +616,9 @@ def create_hodor_agent(
             # Already registered
             pass
 
-        tools.append(Tool(name=DelegateTool.name))
+        tools.append(Tool(name=DelegateTool.name, params={"max_children": 25}))
         if verbose:
-            logger.info("Added DelegateTool to orchestrator tools (three-tier: analyzer, verifier, context)")
+            logger.info("Added DelegateTool to orchestrator tools (max_children=25)")
 
     tool_names = [t.name for t in tools]
     if verbose:

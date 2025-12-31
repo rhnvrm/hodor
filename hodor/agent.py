@@ -13,6 +13,7 @@ from openhands.sdk import Conversation
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.event import Event
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
 from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
@@ -355,11 +356,13 @@ def review_pr(
         iteration_limit = 1_000_000 if max_iterations == -1 else max_iterations
 
         # Register event callback for real-time monitoring if verbose
+        # Use DelegationVisualizer to enable logging of worker agent actions
         conversation = Conversation(
             agent=agent,
             workspace=workspace_obj,
             callbacks=[on_event] if verbose else None,
             max_iteration_per_run=iteration_limit,
+            visualizer=DelegationVisualizer(name="orchestrator"),
         )
 
         logger.info("Sending prompt to agent...")
