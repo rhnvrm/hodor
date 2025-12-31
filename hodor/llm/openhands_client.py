@@ -308,18 +308,27 @@ def get_api_key(model: str | None = None) -> str:
     raise RuntimeError("No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
 
 
-def create_worker_agent_factory(lite_model: str, api_key: str) -> Callable:
-    """Create a factory function that produces generic Haiku worker agents.
+def create_agent_factory(
+    lite_model: str,
+    lite_api_key: str,
+    verifier_model: str,
+    verifier_api_key: str,
+) -> dict[str, Callable]:
+    """Create factory functions for all worker agent types.
 
-    Workers interpret their mission from the task description (ad-hoc).
-    This factory is used with OpenHands DelegateTool for multi-model orchestration.
+    This factory supports the three-tier architecture:
+    - analyzer: Haiku workers for bulk file analysis (cheap, parallel)
+    - verifier: Opus workers for targeted P1/P2 verification (expensive, focused)
+    - context: Haiku worker for pattern discovery (cheap, runs first)
 
     Args:
-        lite_model: The lite model to use for workers (e.g., "anthropic/claude-3-5-haiku-20241022")
-        api_key: API key for the lite model
+        lite_model: Model for analyzers/context workers (e.g., "anthropic/claude-haiku-4-5-20251001")
+        lite_api_key: API key for lite model
+        verifier_model: Model for verifiers (e.g., "anthropic/claude-opus-4-5-20251101")
+        verifier_api_key: API key for verifier model
 
     Returns:
-        A factory function that creates worker agents
+        Dict mapping agent type names to factory functions
     """
     from openhands.sdk.agent.agent import Agent
     from openhands.sdk.context.agent_context import AgentContext
@@ -330,32 +339,31 @@ def create_worker_agent_factory(lite_model: str, api_key: str) -> Callable:
     from openhands.tools.planning_file_editor import PlanningFileEditorTool
     from openhands.tools.terminal import TerminalTool
 
-    # Load worker skill as STATIC content (no str.format() interpolation)
+    # Load skill templates
     worker_skill_path = TEMPLATES_DIR / "worker_skill.md"
+    verifier_skill_path = TEMPLATES_DIR / "verifier_skill.md"
+    context_skill_path = TEMPLATES_DIR / "context_worker_skill.md"
+
     with open(worker_skill_path) as f:
         worker_skill_content = f.read()
+    with open(verifier_skill_path) as f:
+        verifier_skill_content = f.read()
+    with open(context_skill_path) as f:
+        context_skill_content = f.read()
 
-    def create_worker_agent(parent_llm: LLM) -> Agent:
-        """Create a new Haiku worker agent.
-
-        Note: We intentionally ignore parent_llm's model and create a new LLM
-        with the lite_model. This ensures workers always use the cheaper model.
-        """
-        # Create NEW LLM with lite model (ignore parent_llm's model)
+    def create_analyzer_agent(parent_llm: LLM) -> Agent:
+        """Create a Haiku analyzer agent for bulk file analysis."""
         worker_llm = LLM(
             model=lite_model,
-            api_key=api_key,
+            api_key=lite_api_key,
             temperature=0.0,
             drop_params=True,
             enable_encrypted_reasoning=False,
         )
 
-        skills = [Skill(
-            name="worker",
-            content=worker_skill_content,  # Generic worker instructions
-        )]
+        skills = [Skill(name="analyzer", content=worker_skill_content)]
 
-        # Read-only tools for analysis (workers should not modify files)
+        # Read-only tools for analysis
         tools = [
             Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
             Tool(name=GrepTool.name),
@@ -369,7 +377,67 @@ def create_worker_agent_factory(lite_model: str, api_key: str) -> Callable:
             context=AgentContext(skills=skills),
         )
 
-    return create_worker_agent
+    def create_verifier_agent(parent_llm: LLM) -> Agent:
+        """Create an Opus verifier agent for targeted P1/P2 verification.
+
+        Verifiers have NO file tools - they work only with the code snippet
+        provided in their task. This keeps context minimal and verification fast.
+        """
+        verifier_llm = LLM(
+            model=verifier_model,
+            api_key=verifier_api_key,
+            temperature=0.0,
+            drop_params=True,
+            enable_encrypted_reasoning=False,
+        )
+
+        skills = [Skill(name="verifier", content=verifier_skill_content)]
+
+        # NO file tools - verifier works only with provided code snippet
+        # This enforces minimal context and prevents scope creep
+        tools = [
+            Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
+        ]
+
+        return Agent(
+            llm=verifier_llm,
+            tools=tools,
+            context=AgentContext(skills=skills),
+        )
+
+    def create_context_agent(parent_llm: LLM) -> Agent:
+        """Create a Haiku context agent for pattern discovery."""
+        context_llm = LLM(
+            model=lite_model,
+            api_key=lite_api_key,
+            temperature=0.0,
+            drop_params=True,
+            enable_encrypted_reasoning=False,
+        )
+
+        skills = [Skill(name="context", content=context_skill_content)]
+
+        # Read-only tools for pattern discovery
+        tools = [
+            Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
+            Tool(name=GrepTool.name),
+            Tool(name=GlobTool.name),
+            Tool(name=PlanningFileEditorTool.name),
+        ]
+
+        return Agent(
+            llm=context_llm,
+            tools=tools,
+            context=AgentContext(skills=skills),
+        )
+
+    return {
+        "analyzer": create_analyzer_agent,
+        "verifier": create_verifier_agent,
+        "context": create_context_agent,
+        # Keep "worker" as alias for backward compatibility
+        "worker": create_analyzer_agent,
+    }
 
 
 def create_hodor_agent(
@@ -494,7 +562,7 @@ def create_hodor_agent(
         Tool(name=TaskTrackerTool.name),  # Task tracking
     ]
 
-    # Add delegation support for multi-model orchestration
+    # Add delegation support for multi-model orchestration (three-tier architecture)
     if enable_subagents and lite_model:
         from openhands.tools.delegate import DelegateTool, register_agent
         from openhands.sdk.tool import register_tool
@@ -505,22 +573,39 @@ def create_hodor_agent(
         if verbose:
             logger.info(f"Patched DelegateTool PROMPT_DIR to: {TEMPLATES_DIR}")
 
-        # Get API key for lite model (may be different provider)
+        # Get API keys for both lite and verifier models
         lite_api_key = get_api_key(lite_model)
-        factory = create_worker_agent_factory(lite_model, lite_api_key)
+        verifier_api_key = api_key  # Verifier uses same key as orchestrator
 
-        # Register generic worker agent type with lite model
-        try:
-            register_agent(
-                name="worker",
-                factory_func=factory,
-                description="Generic worker agent that interprets missions from task descriptions",
-            )
-            if verbose:
-                logger.info(f"Registered 'worker' agent type with model: {lite_model}")
-        except ValueError:
-            # Already registered from a previous call
-            pass
+        # Create factory with all agent types
+        factories = create_agent_factory(
+            lite_model=lite_model,
+            lite_api_key=lite_api_key,
+            verifier_model=normalized_model,  # Verifier uses orchestrator's model (Opus)
+            verifier_api_key=verifier_api_key,
+        )
+
+        # Register all agent types
+        agent_types = [
+            ("analyzer", "Haiku analyzer for bulk file analysis (cheap, parallel)"),
+            ("verifier", "Opus verifier for P1/P2 finding verification (focused, minimal context)"),
+            ("context", "Haiku context worker for pattern discovery (runs first)"),
+            ("worker", "Generic worker (alias for analyzer, backward compatible)"),
+        ]
+
+        for agent_name, description in agent_types:
+            try:
+                register_agent(
+                    name=agent_name,
+                    factory_func=factories[agent_name],
+                    description=description,
+                )
+                if verbose:
+                    model_used = lite_model if agent_name != "verifier" else normalized_model
+                    logger.info(f"Registered '{agent_name}' agent type with model: {model_used}")
+            except ValueError:
+                # Already registered from a previous call
+                pass
 
         # Register DelegateTool
         try:
@@ -533,7 +618,7 @@ def create_hodor_agent(
 
         tools.append(Tool(name=DelegateTool.name))
         if verbose:
-            logger.info("Added DelegateTool to orchestrator tools")
+            logger.info("Added DelegateTool to orchestrator tools (three-tier: analyzer, verifier, context)")
 
     tool_names = [t.name for t in tools]
     if verbose:
