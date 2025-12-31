@@ -118,7 +118,7 @@ def parse_llm_args(ctx, param, value):
 )
 @click.option(
     "--lite-model",
-    default="anthropic/claude-3-5-haiku-20241022",
+    default="anthropic/claude-haiku-4-5-20251001",
     help="Lite model for worker subagents (cheaper, faster). Used for parallel file analysis.",
 )
 @click.option(
