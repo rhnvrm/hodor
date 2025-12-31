@@ -14,6 +14,7 @@ from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.event import Event
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.delegate.visualizer import DelegationVisualizer
+from openhands.tools.delegate.impl import DelegateExecutor
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
 from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
@@ -21,6 +22,75 @@ from .llm import create_hodor_agent
 from .prompts.pr_review_prompt import build_pr_review_prompt
 from .skills import discover_skills
 from .workspace import cleanup_workspace, setup_workspace
+
+
+def aggregate_all_costs(conversation: Conversation) -> dict[str, Any]:
+    """Aggregate costs from orchestrator and all worker agents.
+
+    Returns:
+        Dict with total_cost, orchestrator_cost, worker_costs breakdown
+    """
+    result = {
+        "orchestrator_cost": 0.0,
+        "orchestrator_tokens": 0,
+        "worker_costs": {},
+        "total_worker_cost": 0.0,
+        "total_worker_tokens": 0,
+        "total_cost": 0.0,
+        "total_tokens": 0,
+    }
+
+    # Get orchestrator metrics
+    if hasattr(conversation, "conversation_stats"):
+        try:
+            combined = conversation.conversation_stats.get_combined_metrics()
+            if combined:
+                result["orchestrator_cost"] = combined.accumulated_cost or 0
+                if combined.accumulated_token_usage:
+                    usage = combined.accumulated_token_usage
+                    result["orchestrator_tokens"] = (
+                        (usage.prompt_tokens or 0) +
+                        (usage.completion_tokens or 0)
+                    )
+        except Exception:
+            pass
+
+    # Try to get worker metrics from delegate executor
+    try:
+        # Access the agent's tools to find the delegate executor
+        if hasattr(conversation, "agent") and hasattr(conversation.agent, "_tools"):
+            for tool_name, tool_def in conversation.agent._tools.items():
+                if tool_name == "delegate" and hasattr(tool_def, "executor"):
+                    executor = tool_def.executor
+                    if isinstance(executor, DelegateExecutor):
+                        # Found the delegate executor, iterate sub-agents
+                        for agent_id, sub_conv in executor._sub_agents.items():
+                            if hasattr(sub_conv, "conversation_stats"):
+                                try:
+                                    sub_metrics = sub_conv.conversation_stats.get_combined_metrics()
+                                    if sub_metrics:
+                                        cost = sub_metrics.accumulated_cost or 0
+                                        tokens = 0
+                                        if sub_metrics.accumulated_token_usage:
+                                            u = sub_metrics.accumulated_token_usage
+                                            tokens = (u.prompt_tokens or 0) + (u.completion_tokens or 0)
+
+                                        result["worker_costs"][agent_id] = {
+                                            "cost": cost,
+                                            "tokens": tokens,
+                                        }
+                                        result["total_worker_cost"] += cost
+                                        result["total_worker_tokens"] += tokens
+                                except Exception:
+                                    pass
+                        break
+    except Exception as e:
+        logger.debug(f"Could not aggregate worker costs: {e}")
+
+    result["total_cost"] = result["orchestrator_cost"] + result["total_worker_cost"]
+    result["total_tokens"] = result["orchestrator_tokens"] + result["total_worker_tokens"]
+
+    return result
 
 # Load environment variables
 load_dotenv()
@@ -385,54 +455,27 @@ def review_pr(
         logger.info(f"Review complete ({len(review_content)} chars)")
 
         # Always print metrics (not just in verbose mode)
-        # Access metrics via conversation.conversation_stats (SDK API)
-        if hasattr(conversation, "conversation_stats"):
-            try:
-                combined = conversation.conversation_stats.get_combined_metrics()
+        # Aggregate costs from orchestrator AND all workers
+        try:
+            costs = aggregate_all_costs(conversation)
 
-                if combined and combined.accumulated_token_usage:
-                    # Token usage breakdown from Metrics object
-                    usage = combined.accumulated_token_usage
-                    prompt_tokens = usage.prompt_tokens or 0
-                    completion_tokens = usage.completion_tokens or 0
-                    cache_read_tokens = usage.cache_read_tokens or 0
-                    cache_write_tokens = usage.cache_write_tokens or 0
-                    reasoning_tokens = usage.reasoning_tokens or 0
-                    total_tokens = prompt_tokens + completion_tokens + cache_read_tokens + reasoning_tokens
+            print("\n" + "=" * 60)
+            print("📊 Cost Summary:")
+            print(f"  • Orchestrator:       ${costs['orchestrator_cost']:.4f}")
 
-                    # Cost estimate (orchestrator only)
-                    orchestrator_cost = combined.accumulated_cost or 0
+            if costs["worker_costs"]:
+                print(f"  • Workers total:      ${costs['total_worker_cost']:.4f}")
+                if verbose:
+                    for agent_id, agent_data in sorted(costs["worker_costs"].items()):
+                        print(f"      - {agent_id}: ${agent_data['cost']:.4f}")
 
-                    # Calculate cache hit rate
-                    cache_hit_rate = 0
-                    if cache_read_tokens > 0 and (prompt_tokens + cache_read_tokens) > 0:
-                        cache_hit_rate = (cache_read_tokens / (prompt_tokens + cache_read_tokens)) * 100
+            print(f"\n💰 TOTAL COST:         ${costs['total_cost']:.4f}")
+            print(f"📝 Total tokens:       {costs['total_tokens']:,}")
+            print(f"⏱️  Review Time:        {review_time_str}")
+            print("=" * 60 + "\n")
 
-                    # Print metrics (always, not just verbose)
-                    print("\n" + "=" * 60)
-                    print("📊 Token Usage Metrics (Orchestrator Only):")
-                    print(f"  • Input tokens:       {prompt_tokens:,}")
-                    print(f"  • Output tokens:      {completion_tokens:,}")
-                    if cache_read_tokens > 0:
-                        print(f"  • Cache hits:         {cache_read_tokens:,} ({cache_hit_rate:.1f}%)")
-                    if reasoning_tokens > 0:
-                        print(f"  • Reasoning tokens:   {reasoning_tokens:,}")
-                    print(f"  • Total tokens:       {total_tokens:,}")
-                    print(f"\n💰 Orchestrator Cost:  ${orchestrator_cost:.4f}")
-                    if enable_subagents:
-                        print("⚠️  Note: Worker costs not included (see logs for per-agent costs)")
-                    print(f"⏱️  Review Time:        {review_time_str}")
-                    print("=" * 60 + "\n")
-
-                    # Verbose mode: additional details
-                    if verbose:
-                        if cache_write_tokens > 0:
-                            logger.info(f"  • Cache writes:       {cache_write_tokens:,}")
-                        if combined.response_latencies:
-                            avg_latency = sum(lat.latency for lat in combined.response_latencies) / len(combined.response_latencies)
-                            logger.info(f"  • Avg API latency:    {avg_latency:.2f}s")
-            except Exception as e:
-                logger.warning(f"Failed to get metrics: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to get metrics: {e}")
 
         return review_content
 
