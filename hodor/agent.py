@@ -1,7 +1,6 @@
 """Core agent for PR review using OpenHands SDK."""
 
 import logging
-import os
 import subprocess
 from pathlib import Path
 from typing import Any, Literal
@@ -17,7 +16,7 @@ from openhands.sdk.workspace import LocalWorkspace
 
 from .github import GitHubAPIError, fetch_github_pr_info, normalize_github_metadata
 from .gitlab import GitLabAPIError, fetch_gitlab_mr_info, post_gitlab_mr_comment
-from .llm import create_hodor_agent, get_api_key
+from .llm import create_hodor_agent
 from .prompts.pr_review_prompt import build_pr_review_prompt
 from .skills import discover_skills
 from .workspace import cleanup_workspace, setup_workspace
@@ -180,6 +179,8 @@ def review_pr(
     workspace_dir: Path | None = None,
     output_format: str = "markdown",
     max_iterations: int = 500,
+    lite_model: str | None = None,
+    enable_subagents: bool = True,
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -197,6 +198,8 @@ def review_pr(
         workspace_dir: Directory to use for workspace (if None, creates temp dir). Reuses if same repo.
         output_format: Output format - "markdown" or "json" (default: "markdown")
         max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
+        lite_model: Lite model for worker subagents (e.g., "anthropic/claude-3-5-haiku-20241022")
+        enable_subagents: Enable worker subagent delegation (default: True)
 
     Returns:
         Review text as string (format depends on output_format)
@@ -259,6 +262,8 @@ def review_pr(
             verbose=verbose,
             llm_overrides=user_llm_params,
             skills=skills,
+            lite_model=lite_model,
+            enable_subagents=enable_subagents,
         )
     except Exception as e:
         logger.error(f"Failed to create OpenHands agent: {e}")
@@ -293,6 +298,7 @@ def review_pr(
             custom_instructions=custom_prompt,
             custom_prompt_file=prompt_file,
             output_format=output_format,
+            enable_subagents=enable_subagents,
         )
     except Exception as e:
         logger.error(f"Failed to build prompt: {e}")
@@ -322,7 +328,7 @@ def review_pr(
             elif action_type == "FileEditAction":
                 logger.info(f"✏️  Editing file: {getattr(event.action, 'file_path', 'unknown')}")
             elif action_type == "MessageAction":
-                logger.info(f"💬 Agent thinking...")
+                logger.info("💬 Agent thinking...")
 
         # Log observations (results)
         if hasattr(event, "observation") and event.observation:

@@ -29,6 +29,7 @@ def build_pr_review_prompt(
     custom_instructions: str | None = None,
     custom_prompt_file: Path | None = None,
     output_format: str = "markdown",
+    enable_subagents: bool = True,
 ) -> str:
     """Build a PR review prompt for OpenHands agent.
 
@@ -43,6 +44,7 @@ def build_pr_review_prompt(
         custom_instructions: Optional additional instructions to append to template
         custom_prompt_file: Optional path to custom template file (replaces base template)
         output_format: Output format - "markdown" or "json" (default: "markdown")
+        enable_subagents: Enable orchestrator workflow with worker delegation (default: True)
 
     Returns:
         Complete prompt for OpenHands agent
@@ -91,10 +93,10 @@ def build_pr_review_prompt(
     # Prepare diff explanation based on platform and available SHA
     if diff_base_sha:
         diff_explanation = (
-            f"**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA "
-            f"(`CI_MERGE_REQUEST_DIFF_BASE_SHA`), which matches exactly what the GitLab UI shows. "
-            f"This is more reliable than three-dot syntax because it handles force pushes, rebases, "
-            f"and messy histories correctly."
+            "**GitLab CI Advantage**: This uses GitLab's pre-calculated merge base SHA "
+            "(`CI_MERGE_REQUEST_DIFF_BASE_SHA`), which matches exactly what the GitLab UI shows. "
+            "This is more reliable than three-dot syntax because it handles force pushes, rebases, "
+            "and messy histories correctly."
         )
     else:
         diff_explanation = (
@@ -134,6 +136,21 @@ def build_pr_review_prompt(
     if custom_instructions:
         prompt += f"\n\n## Additional Instructions\n\n{custom_instructions}\n"
         logger.info("Appended custom instructions to prompt")
+
+    # Step 5: Append orchestrator workflow if subagents are enabled
+    # Note: This is loaded as STATIC content (no str.format() interpolation)
+    # to avoid issues with JSON {} braces in the workflow template
+    if enable_subagents:
+        workflow_path = TEMPLATES_DIR / "orchestrator_workflow.md"
+        try:
+            with open(workflow_path, "r", encoding="utf-8") as f:
+                workflow_content = f.read()
+            prompt += f"\n\n{workflow_content}\n"
+            logger.info("Appended orchestrator workflow to prompt (subagents enabled)")
+        except FileNotFoundError:
+            logger.warning(f"Orchestrator workflow template not found: {workflow_path}")
+        except Exception as e:
+            logger.error(f"Failed to load orchestrator workflow: {e}")
 
     return prompt
 

@@ -2,7 +2,6 @@
 
 import logging
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
-from .agent import detect_platform, parse_pr_url, post_review_comment, review_pr
+from .agent import detect_platform, post_review_comment, review_pr
 
 console = Console()
 
@@ -117,6 +116,16 @@ def parse_llm_args(ctx, param, value):
     is_flag=True,
     help="Enable maximum reasoning effort with extended thinking budget (shortcut for --reasoning-effort high)",
 )
+@click.option(
+    "--lite-model",
+    default="anthropic/claude-3-5-haiku-20241022",
+    help="Lite model for worker subagents (cheaper, faster). Used for parallel file analysis.",
+)
+@click.option(
+    "--no-subagents",
+    is_flag=True,
+    help="Disable subagent delegation (single model mode). Orchestrator does all analysis directly.",
+)
 def main(
     pr_url: str,
     model: str,
@@ -131,6 +140,8 @@ def main(
     workspace: str | None,
     max_iterations: int,
     ultrathink: bool,
+    lite_model: str,
+    no_subagents: bool,
 ):
     """
     Review a GitHub pull request or GitLab merge request using AI.
@@ -206,14 +217,21 @@ def main(
         if "extended_thinking_budget" not in llm:
             llm = {**llm, "extended_thinking_budget": 500000}
 
+    # Determine subagent mode
+    enable_subagents = not no_subagents
+
     console.print("\n[bold cyan]🚪 Hodor - AI Code Review Agent[/bold cyan]")
     console.print(f"[dim]Platform: {platform.upper()}[/dim]")
     console.print(f"[dim]PR URL: {pr_url}[/dim]")
     console.print(f"[dim]Model: {model}[/dim]")
+    if enable_subagents:
+        console.print(f"[dim]Lite Model: {lite_model} (for worker subagents)[/dim]")
+    else:
+        console.print("[dim]Subagents: Disabled (single model mode)[/dim]")
     if reasoning_effort:
         console.print(f"[dim]Reasoning Effort: {reasoning_effort}[/dim]")
     if max_iterations == -1:
-        console.print(f"[dim]Max Iterations: Unlimited[/dim]")
+        console.print("[dim]Max Iterations: Unlimited[/dim]")
     else:
         console.print(f"[dim]Max Iterations: {max_iterations}[/dim]")
     console.print()
@@ -242,6 +260,8 @@ def main(
                 workspace_dir=workspace_path,
                 output_format="json" if output_json else "markdown",
                 max_iterations=max_iterations,
+                lite_model=lite_model if enable_subagents else None,
+                enable_subagents=enable_subagents,
             )
 
             progress.update(task, description="Review complete!")

@@ -6,19 +6,23 @@ This module provides a clean interface to OpenHands SDK, handling:
 - Agent creation with appropriate tool presets
 - Model name normalization for OpenAI Responses API
 - Encrypted reasoning configuration (disabled by default for compatibility)
+- Worker agent factory for multi-model orchestration
 """
 
 from collections.abc import Callable
 from dataclasses import dataclass
 import logging
 import os
+from pathlib import Path
 import shutil
 from typing import Any
 
 from openhands.sdk import LLM
-from openhands.tools.preset.default import get_default_agent
 
 logger = logging.getLogger(__name__)
+
+# Template directory for worker skills
+TEMPLATES_DIR = Path(__file__).parent.parent / "prompts" / "templates"
 
 
 @dataclass(frozen=True)
@@ -304,6 +308,70 @@ def get_api_key(model: str | None = None) -> str:
     raise RuntimeError("No LLM API key found. Please set one of: LLM_API_KEY, ANTHROPIC_API_KEY, or OPENAI_API_KEY")
 
 
+def create_worker_agent_factory(lite_model: str, api_key: str) -> Callable:
+    """Create a factory function that produces generic Haiku worker agents.
+
+    Workers interpret their mission from the task description (ad-hoc).
+    This factory is used with OpenHands DelegateTool for multi-model orchestration.
+
+    Args:
+        lite_model: The lite model to use for workers (e.g., "anthropic/claude-3-5-haiku-20241022")
+        api_key: API key for the lite model
+
+    Returns:
+        A factory function that creates worker agents
+    """
+    from openhands.sdk.agent.agent import Agent
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.context import Skill
+    from openhands.sdk.tool.spec import Tool
+    from openhands.tools.glob import GlobTool
+    from openhands.tools.grep import GrepTool
+    from openhands.tools.planning_file_editor import PlanningFileEditorTool
+    from openhands.tools.terminal import TerminalTool
+
+    # Load worker skill as STATIC content (no str.format() interpolation)
+    worker_skill_path = TEMPLATES_DIR / "worker_skill.md"
+    with open(worker_skill_path) as f:
+        worker_skill_content = f.read()
+
+    def create_worker_agent(parent_llm: LLM) -> Agent:
+        """Create a new Haiku worker agent.
+
+        Note: We intentionally ignore parent_llm's model and create a new LLM
+        with the lite_model. This ensures workers always use the cheaper model.
+        """
+        # Create NEW LLM with lite model (ignore parent_llm's model)
+        worker_llm = LLM(
+            model=lite_model,
+            api_key=api_key,
+            temperature=0.0,
+            drop_params=True,
+            enable_encrypted_reasoning=False,
+        )
+
+        skills = [Skill(
+            name="worker",
+            content=worker_skill_content,  # Generic worker instructions
+        )]
+
+        # Read-only tools for analysis (workers should not modify files)
+        tools = [
+            Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
+            Tool(name=GrepTool.name),
+            Tool(name=GlobTool.name),
+            Tool(name=PlanningFileEditorTool.name),
+        ]
+
+        return Agent(
+            llm=worker_llm,
+            tools=tools,
+            context=AgentContext(skills=skills),
+        )
+
+    return create_worker_agent
+
+
 def create_hodor_agent(
     model: str,
     api_key: str | None = None,
@@ -313,6 +381,8 @@ def create_hodor_agent(
     verbose: bool = False,
     llm_overrides: dict[str, Any] | None = None,
     skills: list[dict] | None = None,
+    lite_model: str | None = None,
+    enable_subagents: bool = True,
 ) -> Any:
     """Create an OpenHands agent configured for Hodor PR reviews.
 
@@ -325,6 +395,8 @@ def create_hodor_agent(
         verbose: Enable verbose logging
         llm_overrides: Additional LLM parameters to pass through
         skills: Repository skills to inject into agent context (from discover_skills())
+        lite_model: Lite model for worker subagents (e.g., "anthropic/claude-3-5-haiku-20241022")
+        enable_subagents: Enable worker subagent delegation (default: True)
 
     Returns:
         Configured OpenHands Agent instance
@@ -422,10 +494,44 @@ def create_hodor_agent(
         Tool(name=TaskTrackerTool.name),  # Task tracking
     ]
 
+    # Add delegation support for multi-model orchestration
+    if enable_subagents and lite_model:
+        from openhands.tools.delegate import DelegateTool, register_agent
+        from openhands.sdk.tool import register_tool
+
+        # Get API key for lite model (may be different provider)
+        lite_api_key = get_api_key(lite_model)
+        factory = create_worker_agent_factory(lite_model, lite_api_key)
+
+        # Register generic worker agent type with lite model
+        try:
+            register_agent(
+                name="worker",
+                factory_func=factory,
+                description="Generic worker agent that interprets missions from task descriptions",
+            )
+            if verbose:
+                logger.info(f"Registered 'worker' agent type with model: {lite_model}")
+        except ValueError:
+            # Already registered from a previous call
+            pass
+
+        # Register DelegateTool
+        try:
+            register_tool(DelegateTool.name, DelegateTool)
+            if verbose:
+                logger.info("Registered DelegateTool")
+        except (ValueError, KeyError):
+            # Already registered
+            pass
+
+        tools.append(Tool(name=DelegateTool.name))
+        if verbose:
+            logger.info("Added DelegateTool to orchestrator tools")
+
+    tool_names = [t.name for t in tools]
     if verbose:
-        logger.info(
-            f"Configured {len(tools)} tools: terminal, grep, glob, planning_file_editor, file_editor, task_tracker"
-        )
+        logger.info(f"Configured {len(tools)} tools: {', '.join(tool_names)}")
 
     # Create condenser for context management
     condenser = LLMSummarizingCondenser(

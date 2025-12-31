@@ -10,7 +10,6 @@ This handles cases where the LLM wraps JSON in markdown fences or adds prose.
 """
 
 import json
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
