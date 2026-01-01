@@ -385,12 +385,15 @@ def create_agent_factory(
             keep_first=2,
         )
 
+        # NOTE: Agent class does NOT support max_iterations parameter.
+        # Worker iteration limits must be enforced via:
+        # 1. Prompt constraints (worker_skill.md BUDGET CONSTRAINTS)
+        # 2. Aggressive condenser settings (max_size=10)
         return Agent(
             llm=worker_llm,
             tools=tools,
             context=AgentContext(skills=skills),
             condenser=worker_condenser,
-            max_iterations=30,  # Prevent runaway workers
         )
 
     def create_verifier_agent(parent_llm: LLM) -> Agent:
@@ -418,11 +421,11 @@ def create_agent_factory(
         # The code snippet is provided IN the task, no fetching needed
         tools = []
 
+        # Verifiers have no tools, so they complete in 1 iteration
         return Agent(
             llm=verifier_llm,
             tools=tools,
             context=AgentContext(skills=skills),
-            max_iterations=10,  # Verifiers should be quick - just validate
         )
 
     def create_context_agent(parent_llm: LLM) -> Agent:
@@ -455,12 +458,13 @@ def create_agent_factory(
             keep_first=2,
         )
 
+        # NOTE: Agent class does NOT support max_iterations parameter.
+        # Context agent iteration limits enforced via prompt constraints
         return Agent(
             llm=context_llm,
             tools=tools,
             context=AgentContext(skills=skills),
             condenser=context_condenser,
-            max_iterations=20,  # Context discovery should be quick
         )
 
     return {

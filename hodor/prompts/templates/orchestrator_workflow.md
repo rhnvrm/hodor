@@ -53,17 +53,22 @@ Group files (1-3 files per worker, max 6 workers):
 }
 ```
 
-Then delegate immediately:
+Then delegate immediately with BOUNDED tasks:
 
 ```json
 {
   "command": "delegate",
   "tasks": {
-    "analyze_0": "MISSION: Find bugs in error handling and edge cases.\nFILES: <file_1_from_phase_0>\nREPORT: P1/P2/P3 issues with file:line and evidence.",
-    "analyze_1": "MISSION: Check concurrency, resource leaks, data races.\nFILES: <file_2_from_phase_0>, <file_3_from_phase_0>\nREPORT: P1/P2/P3 issues with file:line and evidence."
+    "analyze_0": "TASK: Review <file_1> for bugs.\nSTEPS: 1) git diff origin/master...HEAD -- <file_1>  2) Check changed lines for bugs  3) Report findings and FINISH.\nEXIT: After analyzing the diff, call finish immediately.",
+    "analyze_1": "TASK: Review <file_2>, <file_3> for bugs.\nSTEPS: 1) git diff for each file  2) Check changed lines  3) Report and FINISH.\nEXIT: After analyzing diffs, call finish immediately."
   }
 }
 ```
+
+Key elements in each task:
+- TASK: What to analyze (specific files only)
+- STEPS: Numbered steps (get diff, analyze, report)
+- EXIT: Explicit instruction to finish after analysis
 
 Replace `<file_N_from_phase_0>` with actual paths from git diff output.
 Workers fetch their own diffs via `git diff origin/master...HEAD -- <file>`.
