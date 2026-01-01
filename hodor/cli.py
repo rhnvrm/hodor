@@ -247,6 +247,9 @@ def main(
 
             # Run the review
             workspace_path = Path(workspace) if workspace else None
+            # Get custom LLM base URL from environment
+            llm_base_url = os.getenv("LLM_BASE_URL")
+
             review_output = review_pr(
                 pr_url=pr_url,
                 model=model,
@@ -262,6 +265,7 @@ def main(
                 max_iterations=max_iterations,
                 lite_model=lite_model if enable_subagents else None,
                 enable_subagents=enable_subagents,
+                base_url=llm_base_url,
             )
 
             progress.update(task, description="Review complete!")

@@ -252,6 +252,7 @@ def review_pr(
     max_iterations: int = 500,
     lite_model: str | None = None,
     enable_subagents: bool = True,
+    base_url: str | None = None,
 ) -> str:
     """
     Review a pull request using OpenHands agent with bash tools.
@@ -271,6 +272,7 @@ def review_pr(
         max_iterations: Maximum number of agent iterations (default: 500, use -1 for unlimited)
         lite_model: Lite model for worker subagents (e.g., "anthropic/claude-3-5-haiku-20241022")
         enable_subagents: Enable worker subagent delegation (default: True)
+        base_url: Custom LLM API base URL (optional, for proxies like CLIProxyAPI)
 
     Returns:
         Review text as string (format depends on output_format)
@@ -335,6 +337,7 @@ def review_pr(
             skills=skills,
             lite_model=lite_model,
             enable_subagents=enable_subagents,
+            base_url=base_url,
         )
     except Exception as e:
         logger.error(f"Failed to create OpenHands agent: {e}")
@@ -440,7 +443,17 @@ def review_pr(
 
         logger.info("Running agent review (this may take several minutes)...")
 
-        conversation.run()
+        try:
+            conversation.run()
+        except Exception as run_error:
+            # Try to extract review even if conversation ended with error
+            # (e.g., empty response after finish tool)
+            logger.warning(f"Conversation ended with error: {run_error}")
+            review_content = get_agent_final_response(conversation.state.events)
+            if review_content:
+                logger.info("Review content was captured before error - continuing with partial result")
+            else:
+                raise
 
         logger.info("Extracting review from agent response...")
         review_content = get_agent_final_response(conversation.state.events)

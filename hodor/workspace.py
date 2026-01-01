@@ -138,6 +138,7 @@ def setup_workspace(
         ci_workspace, ci_target_branch, ci_diff_base_sha = _detect_ci_workspace(owner, repo, pr_number)
         detected_target_branch = ci_target_branch  # Track detected target branch
         detected_diff_base_sha = ci_diff_base_sha  # Track diff base SHA (GitLab only)
+        reusing_workspace = False  # Track if we're reusing an existing workspace
 
         if ci_workspace:
             workspace = ci_workspace
@@ -150,7 +151,8 @@ def setup_workspace(
             workspace.mkdir(parents=True, exist_ok=True)
 
             # Check if we can reuse existing workspace
-            if reuse and _is_same_repo(workspace, platform, owner, repo):
+            reusing_workspace = reuse and _is_same_repo(workspace, platform, owner, repo)
+            if reusing_workspace:
                 logger.info(f"Reusing existing workspace: {workspace}")
                 # Just fetch latest and checkout PR branch
                 subprocess.run(
@@ -166,11 +168,11 @@ def setup_workspace(
         # Skip workspace setup entirely if in CI (repo already cloned and on the right branch)
         if not ci_workspace:
             if platform == "github":
-                target_branch = _setup_github_workspace(workspace, owner, repo, pr_number)
+                target_branch = _setup_github_workspace(workspace, owner, repo, pr_number, skip_clone=reusing_workspace)
                 if detected_target_branch is None:
                     detected_target_branch = target_branch
             elif platform == "gitlab":
-                target_branch = _setup_gitlab_workspace(workspace, owner, repo, pr_number, host)
+                target_branch = _setup_gitlab_workspace(workspace, owner, repo, pr_number, host, skip_clone=reusing_workspace)
                 if detected_target_branch is None:
                     detected_target_branch = target_branch
             else:
@@ -197,7 +199,7 @@ def setup_workspace(
         raise WorkspaceError(f"Failed to setup workspace: {e}") from e
 
 
-def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: str) -> str:
+def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: str, skip_clone: bool = False) -> str:
     """Setup GitHub PR workspace using gh CLI.
 
     Args:
@@ -205,6 +207,7 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         owner: Repository owner
         repo: Repository name
         pr_number: PR number
+        skip_clone: If True, skip cloning (workspace already has the repo)
 
     Returns:
         Base branch name (target branch of the PR)
@@ -229,27 +232,30 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
     if not github_token:
         logger.warning("GITHUB_TOKEN not set. Ensure you're authenticated with: gh auth login")
 
-    # Clone repository
-    logger.info(f"Cloning repository {owner}/{repo}...")
-    try:
-        subprocess.run(
-            ["gh", "repo", "clone", f"{owner}/{repo}", str(workspace)],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
-        logger.error(f"gh repo clone failed: {error_msg}")
-        raise WorkspaceError(
-            f"Failed to clone repository {owner}/{repo}\n"
-            f"Command: gh repo clone {owner}/{repo}\n"
-            f"Error: {error_msg}\n"
-            f"Troubleshooting:\n"
-            f"  1. Verify repository exists: https://github.com/{owner}/{repo}\n"
-            f"  2. Check authentication: gh auth status\n"
-            f"  3. Verify GITHUB_TOKEN is set and has repo access"
-        ) from e
+    # Clone repository (skip if reusing existing workspace)
+    if skip_clone:
+        logger.info(f"Skipping clone - reusing existing workspace for {owner}/{repo}")
+    else:
+        logger.info(f"Cloning repository {owner}/{repo}...")
+        try:
+            subprocess.run(
+                ["gh", "repo", "clone", f"{owner}/{repo}", str(workspace)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr if hasattr(e, "stderr") and e.stderr else str(e)
+            logger.error(f"gh repo clone failed: {error_msg}")
+            raise WorkspaceError(
+                f"Failed to clone repository {owner}/{repo}\n"
+                f"Command: gh repo clone {owner}/{repo}\n"
+                f"Error: {error_msg}\n"
+                f"Troubleshooting:\n"
+                f"  1. Verify repository exists: https://github.com/{owner}/{repo}\n"
+                f"  2. Check authentication: gh auth status\n"
+                f"  3. Verify GITHUB_TOKEN is set and has repo access"
+            ) from e
 
     # Change to workspace directory
     original_dir = Path.cwd()
@@ -301,7 +307,7 @@ def _setup_github_workspace(workspace: Path, owner: str, repo: str, pr_number: s
     return base_branch
 
 
-def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: str, host: str | None = None) -> str:
+def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: str, host: str | None = None, skip_clone: bool = False) -> str:
     """Setup GitLab MR workspace using glab CLI.
 
     Supports self-hosted GitLab instances via host parameter or GITLAB_HOST environment variable.
@@ -312,6 +318,7 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
         repo: Repository name
         pr_number: Merge request number
         host: GitLab host (e.g., 'gitlab.com', 'gitlab.example.com'). Falls back to GITLAB_HOST env var or 'gitlab.com'.
+        skip_clone: If True, skip cloning (workspace already has the repo)
 
     Returns:
         Target branch name (base branch of the MR)
@@ -344,20 +351,23 @@ def _setup_gitlab_workspace(workspace: Path, owner: str, repo: str, pr_number: s
             f"GITLAB_TOKEN not set. Ensure you're authenticated with: glab auth login --hostname {gitlab_host}"
         )
 
-    # Clone repository
+    # Clone repository (skip if reusing existing workspace)
     # Format: owner/repo or group/subgroup/repo
     repo_full_path = f"{owner}/{repo}"
-    logger.info(f"Cloning repository {repo_full_path}...")
 
-    # Use HTTPS clone URL for consistency
-    clone_url = f"https://{gitlab_host}/{owner}/{repo}.git"
+    if skip_clone:
+        logger.info(f"Skipping clone - reusing existing workspace for {repo_full_path}")
+    else:
+        logger.info(f"Cloning repository {repo_full_path}...")
+        # Use HTTPS clone URL for consistency
+        clone_url = f"https://{gitlab_host}/{owner}/{repo}.git"
 
-    subprocess.run(
-        ["git", "clone", clone_url, str(workspace)],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+        subprocess.run(
+            ["git", "clone", clone_url, str(workspace)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     # Change to workspace directory
     original_dir = Path.cwd()
