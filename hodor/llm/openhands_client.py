@@ -313,6 +313,7 @@ def create_agent_factory(
     lite_api_key: str,
     verifier_model: str,
     verifier_api_key: str,
+    base_url: str | None = None,
 ) -> dict[str, Callable]:
     """Create factory functions for all worker agent types.
 
@@ -354,13 +355,16 @@ def create_agent_factory(
 
     def create_analyzer_agent(parent_llm: LLM) -> Agent:
         """Create a Haiku analyzer agent for bulk file analysis."""
-        worker_llm = LLM(
-            model=lite_model,
-            api_key=lite_api_key,
-            temperature=0.0,
-            drop_params=True,
-            enable_encrypted_reasoning=False,
-        )
+        llm_config = {
+            "model": lite_model,
+            "api_key": lite_api_key,
+            "temperature": 0.0,
+            "drop_params": True,
+            "enable_encrypted_reasoning": False,
+        }
+        if base_url:
+            llm_config["base_url"] = base_url
+        worker_llm = LLM(**llm_config)
 
         skills = [Skill(name="analyzer", content=worker_skill_content)]
 
@@ -395,13 +399,16 @@ def create_agent_factory(
         provided in their task. This keeps context minimal and verification fast.
         They can only think and respond - no file reading, no terminal commands.
         """
-        verifier_llm = LLM(
-            model=verifier_model,
-            api_key=verifier_api_key,
-            temperature=0.0,
-            drop_params=True,
-            enable_encrypted_reasoning=False,
-        )
+        llm_config = {
+            "model": verifier_model,
+            "api_key": verifier_api_key,
+            "temperature": 0.0,
+            "drop_params": True,
+            "enable_encrypted_reasoning": False,
+        }
+        if base_url:
+            llm_config["base_url"] = base_url
+        verifier_llm = LLM(**llm_config)
 
         skills = [Skill(name="verifier", content=verifier_skill_content)]
 
@@ -418,13 +425,16 @@ def create_agent_factory(
 
     def create_context_agent(parent_llm: LLM) -> Agent:
         """Create a Haiku context agent for pattern discovery."""
-        context_llm = LLM(
-            model=lite_model,
-            api_key=lite_api_key,
-            temperature=0.0,
-            drop_params=True,
-            enable_encrypted_reasoning=False,
-        )
+        llm_config = {
+            "model": lite_model,
+            "api_key": lite_api_key,
+            "temperature": 0.0,
+            "drop_params": True,
+            "enable_encrypted_reasoning": False,
+        }
+        if base_url:
+            llm_config["base_url"] = base_url
+        context_llm = LLM(**llm_config)
 
         skills = [Skill(name="context", content=context_skill_content)]
 
@@ -602,6 +612,7 @@ def create_hodor_agent(
             lite_api_key=lite_api_key,
             verifier_model=normalized_model,  # Verifier uses orchestrator's model (Opus)
             verifier_api_key=verifier_api_key,
+            base_url=base_url,  # Pass base_url for CLI proxy support
         )
 
         # Register all agent types
