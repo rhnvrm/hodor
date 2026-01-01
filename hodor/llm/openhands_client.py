@@ -381,7 +381,7 @@ def create_agent_factory(
         # keep_first=2: preserve the task prompt
         worker_condenser = LLMSummarizingCondenser(
             llm=worker_llm.model_copy(update={"usage_id": "analyzer_condenser"}),
-            max_size=20,
+            max_size=10,  # Reduced from 20 to prevent token explosion
             keep_first=2,
         )
 
@@ -390,6 +390,7 @@ def create_agent_factory(
             tools=tools,
             context=AgentContext(skills=skills),
             condenser=worker_condenser,
+            max_iterations=30,  # Prevent runaway workers
         )
 
     def create_verifier_agent(parent_llm: LLM) -> Agent:
@@ -421,6 +422,7 @@ def create_agent_factory(
             llm=verifier_llm,
             tools=tools,
             context=AgentContext(skills=skills),
+            max_iterations=10,  # Verifiers should be quick - just validate
         )
 
     def create_context_agent(parent_llm: LLM) -> Agent:
@@ -449,7 +451,7 @@ def create_agent_factory(
         # Aggressive condenser to prevent context bloat
         context_condenser = LLMSummarizingCondenser(
             llm=context_llm.model_copy(update={"usage_id": "context_condenser"}),
-            max_size=20,
+            max_size=10,  # Reduced from 20 to prevent token explosion
             keep_first=2,
         )
 
@@ -458,6 +460,7 @@ def create_agent_factory(
             tools=tools,
             context=AgentContext(skills=skills),
             condenser=context_condenser,
+            max_iterations=20,  # Context discovery should be quick
         )
 
     return {
