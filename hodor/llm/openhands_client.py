@@ -368,11 +368,14 @@ def create_agent_factory(
 
         skills = [Skill(name="analyzer", content=worker_skill_content)]
 
-        # MINIMAL tools - only terminal for git diff
-        # Removed PlanningFileEditorTool to prevent workers from reading full files
-        # Workers should analyze diffs only, not explore the codebase
+        # Tools for code analysis
+        # NOTE: Workers tend to over-use file_editor for "context" despite prompts.
+        # Keeping it because removing it (run-13) made workers use more terminal calls.
         tools = [
             Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
+            Tool(name=GrepTool.name),
+            Tool(name=GlobTool.name),
+            Tool(name=PlanningFileEditorTool.name),
         ]
 
         # Aggressive condenser to prevent context bloat
