@@ -368,34 +368,19 @@ def create_agent_factory(
 
         skills = [Skill(name="analyzer", content=worker_skill_content)]
 
-        # Tools for code analysis
-        # NOTE: Workers tend to over-use file_editor for "context" despite prompts.
-        # Keeping it because removing it (run-13) made workers use more terminal calls.
-        tools = [
-            Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
-            Tool(name=GrepTool.name),
-            Tool(name=GlobTool.name),
-            Tool(name=PlanningFileEditorTool.name),
-        ]
+        # NO TOOLS for analyzers - they should only analyze the embedded diff
+        # Tools cause workers to explore endlessly, consume context, and loop.
+        # The diff is embedded in the task by the orchestrator, no fetching needed.
+        # Run-18 showed workers looping (779 API calls) when given tools.
+        tools = []
 
-        # Aggressive condenser to prevent context bloat
-        # max_size=20: summarize after 20 events
-        # keep_first=2: preserve the task prompt
-        worker_condenser = LLMSummarizingCondenser(
-            llm=worker_llm.model_copy(update={"usage_id": "analyzer_condenser"}),
-            max_size=10,  # Reduced from 20 to prevent token explosion
-            keep_first=2,
-        )
-
+        # No condenser needed - workers complete in 1 iteration (no tools = no exploration)
         # NOTE: Agent class does NOT support max_iterations parameter.
-        # Worker iteration limits must be enforced via:
-        # 1. Prompt constraints (worker_skill.md BUDGET CONSTRAINTS)
-        # 2. Aggressive condenser settings (max_size=10)
         return Agent(
             llm=worker_llm,
             tools=tools,
             context=AgentContext(skills=skills),
-            condenser=worker_condenser,
+            # No condenser - task should complete immediately
         )
 
     def create_verifier_agent(parent_llm: LLM) -> Agent:
@@ -453,11 +438,13 @@ def create_agent_factory(
             Tool(name=PlanningFileEditorTool.name),
         ]
 
-        # Aggressive condenser to prevent context bloat
+        # Context agent needs more memory than analyzers since it explores patterns
+        # Increased from 10 to 40 to prevent premature summarization and looping
+        # (Run-18 showed max_size=10 caused context loss and endless loops)
         context_condenser = LLMSummarizingCondenser(
             llm=context_llm.model_copy(update={"usage_id": "context_condenser"}),
-            max_size=10,  # Reduced from 20 to prevent token explosion
-            keep_first=2,
+            max_size=40,
+            keep_first=3,
         )
 
         # NOTE: Agent class does NOT support max_iterations parameter.
