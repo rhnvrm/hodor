@@ -368,12 +368,11 @@ def create_agent_factory(
 
         skills = [Skill(name="analyzer", content=worker_skill_content)]
 
-        # Read-only tools for analysis
+        # MINIMAL tools - only terminal for git diff
+        # Removed PlanningFileEditorTool to prevent workers from reading full files
+        # Workers should analyze diffs only, not explore the codebase
         tools = [
             Tool(name=TerminalTool.name, params={"terminal_type": "subprocess"}),
-            Tool(name=GrepTool.name),
-            Tool(name=GlobTool.name),
-            Tool(name=PlanningFileEditorTool.name),
         ]
 
         # Aggressive condenser to prevent context bloat
