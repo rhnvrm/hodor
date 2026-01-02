@@ -29,49 +29,48 @@ Workers are CHEAPER and FASTER. Delegate immediately.
 
 ---
 
-### PHASE 0: GET FILE LIST ONLY (1 command max)
+### PHASE 0: GET FILE LIST AND DIFFS (2-3 commands)
 
+Step 1: Get list of changed files
 ```bash
 git --no-pager diff origin/master...HEAD --name-only
 ```
 
-Do NOT read diffs. Do NOT analyze. Proceed immediately to PHASE 1.
+Step 2: Get the actual diff content (one command per batch of files)
+```bash
+git --no-pager diff origin/master...HEAD -- file1.py file2.py
+```
+
+You need the diff content to embed in worker tasks.
 
 ---
 
-### PHASE 1: SPAWN WORKERS IMMEDIATELY
+### PHASE 1: SPAWN AND DELEGATE WITH EMBEDDED DIFFS
 
-Within 2 tool calls after PHASE 0, spawn and delegate.
-
-Group files (1-3 files per worker, max 6 workers):
+Spawn workers and delegate with the DIFF CONTENT EMBEDDED in the task:
 
 ```json
 {
   "command": "spawn",
-  "ids": ["analyze_0", "analyze_1", "analyze_2"],
-  "agent_types": ["analyzer", "analyzer", "analyzer"]
+  "ids": ["analyze_0", "analyze_1"],
+  "agent_types": ["analyzer", "analyzer"]
 }
 ```
 
-Then delegate immediately with BOUNDED tasks:
+Then delegate with the ACTUAL DIFF embedded (not file paths):
 
 ```json
 {
   "command": "delegate",
   "tasks": {
-    "analyze_0": "TASK: Review <file_1> for bugs.\nSTEPS: 1) git diff origin/master...HEAD -- <file_1>  2) Check changed lines for bugs  3) Report findings and FINISH.\nEXIT: After analyzing the diff, call finish immediately.",
-    "analyze_1": "TASK: Review <file_2>, <file_3> for bugs.\nSTEPS: 1) git diff for each file  2) Check changed lines  3) Report and FINISH.\nEXIT: After analyzing diffs, call finish immediately."
+    "analyze_0": "DIFF CONTENT (analyze this, no tools needed):\n```diff\n<paste the actual diff output here>\n```\n\nFind bugs in the + and - lines. Report findings and call finish.",
+    "analyze_1": "DIFF CONTENT:\n```diff\n<paste the actual diff for file2>\n```\n\nFind bugs. Report and finish."
   }
 }
 ```
 
-Key elements in each task:
-- TASK: What to analyze (specific files only)
-- STEPS: Numbered steps (get diff, analyze, report)
-- EXIT: Explicit instruction to finish after analysis
-
-Replace `<file_N_from_phase_0>` with actual paths from git diff output.
-Workers fetch their own diffs via `git diff origin/master...HEAD -- <file>`.
+CRITICAL: Workers receive the diff content IN THEIR TASK. They do NOT need to run git commands.
+This eliminates worker tool calls entirely - they just analyze and report.
 
 ---
 
